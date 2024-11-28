@@ -1,6 +1,6 @@
 [package]
 name = "rej"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Minimalistic storage for database"
 license = "MIT"
@@ -14,3 +14,4 @@ fs4 = { version = "0.11.1" }
 memmap2 = { version = "0.9.5" }
 thiserror = { version = "2.0" }
 parking_lot = { version = "0.12.3" }
+memoffset = { version = "0.9.1" }

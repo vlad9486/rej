@@ -22,8 +22,8 @@ pub enum StorageError {
     Io(#[from] io::Error),
     #[error("no root page")]
     NoRootPage,
-    #[error("bad list index {0}")]
-    BadListIndex(usize),
+    #[error("bad static type")]
+    BadStaticType,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -32,11 +32,12 @@ pub struct StorageConfig {
     pub mmap_populate: bool,
 }
 
-pub struct Storage {
+pub struct Storage<S> {
     cfg: StorageConfig,
     file: Mutex<fs::File>,
     mapped: RwLock<Mmap>,
     freelist_lock: Mutex<()>,
+    phantom_data: PhantomData<S>,
 }
 
 pub struct PagePtr<T>(NonZeroU32, PhantomData<T>);
@@ -100,12 +101,32 @@ where
     }
 }
 
-impl Storage {
+pub struct StaticPageView<'a, P>(RwLockReadGuard<'a, Mmap>, PhantomData<P>);
+
+impl<'a, P> Deref for StaticPageView<'a, P>
+where
+    P: Page,
+{
+    type Target = P;
+
+    fn deref(&self) -> &Self::Target {
+        &FreePage::<P>::as_this(&self.0, None).data
+    }
+}
+
+impl<S> Storage<S>
+where
+    S: Page + Copy,
+{
     pub fn open(
         path: impl AsRef<Path>,
         create: bool,
         cfg: StorageConfig,
     ) -> Result<Self, StorageError> {
+        if mem::size_of::<FreePage<S>>() > PAGE_SIZE as usize {
+            return Err(StorageError::BadStaticType);
+        }
+
         let file = utils::open_file(path, create, cfg.direct_write)?;
         file.lock_exclusive()?;
         if create {
@@ -119,25 +140,35 @@ impl Storage {
             file,
             mapped,
             freelist_lock: Mutex::new(()),
+            phantom_data: PhantomData,
         })
     }
 
-    fn read_head(&self, index: usize) -> Option<PagePtr<FreePage>> {
+    fn read_head(&self) -> Option<PagePtr<FreePage<S>>> {
         let lock = self.mapped.read();
-        let b = &lock[(index * PTR_SIZE)..((index + 1) * PTR_SIZE)];
+        let b = &lock[0..PTR_SIZE];
         let raw_ptr = u32::from_le_bytes(b.try_into().expect("cannot fail"));
         NonZeroU32::new(raw_ptr).map(|p| PagePtr(p, PhantomData))
     }
 
-    fn write_head(
-        &self,
-        index: usize,
-        head: Option<PagePtr<FreePage>>,
-    ) -> Result<(), StorageError> {
+    fn write_head(&self, head: Option<PagePtr<FreePage<S>>>) -> Result<(), StorageError> {
         let mut lock = self.file.lock();
-        lock.seek(io::SeekFrom::Start((index * PTR_SIZE) as u64))?;
+        lock.seek(io::SeekFrom::Start(0))?;
         let head = head.as_ref().map_or(0, |p| p.0.get());
         lock.write_all(&head.to_le_bytes())?;
+
+        Ok(())
+    }
+
+    pub fn read_static(&self) -> StaticPageView<'_, S> {
+        StaticPageView(self.mapped.read(), PhantomData)
+    }
+
+    pub fn write_static(&self, page: &S) -> Result<(), StorageError> {
+        let mut lock = self.file.lock();
+        let offset = memoffset::offset_of!(FreePage::<S>, data);
+        lock.seek(io::SeekFrom::Start(offset as u64))?;
+        lock.write_all(&page.as_bytes())?;
 
         Ok(())
     }
@@ -194,9 +225,9 @@ impl Storage {
         T: Page,
     {
         let lock = self.freelist_lock.lock();
-        if let Some(result) = self.read_head(0) {
+        if let Some(result) = self.read_head() {
             let head = self.read(result).next;
-            self.write_head(0, head)?;
+            self.write_head(head)?;
 
             Ok(result.cast())
         } else {
@@ -210,30 +241,15 @@ impl Storage {
     where
         T: Page,
     {
-        let ptr = ptr.cast::<FreePage>();
+        let ptr = ptr.cast::<FreePage<S>>();
         let mut free_page = *self.read(ptr);
         let lock = self.freelist_lock.lock();
-        free_page.next = self.read_head(0);
+        free_page.next = self.read_head();
         self.write_range(ptr, &free_page, 0..PTR_SIZE)?;
-        self.write_head(0, Some(ptr))?;
+        self.write_head(Some(ptr))?;
         drop(lock);
 
         Ok(())
-    }
-
-    /// `index` must not be zero, `index` must be smaller `PAGE_SIZE as usize / PTR_SIZE`
-    pub fn head<T>(&self, index: usize) -> Result<PagePtr<T>, StorageError> {
-        if index == 0 || index >= PAGE_SIZE as usize / PTR_SIZE {
-            return Err(StorageError::BadListIndex(index));
-        }
-        if let Some(ptr) = self.read_head(index) {
-            Ok(ptr.cast())
-        } else {
-            let ptr = self.allocate()?;
-            self.write_head(index, Some(ptr))?;
-
-            Ok(ptr.cast())
-        }
     }
 }
 
@@ -256,12 +272,12 @@ where
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct FreePage {
-    next: Option<PagePtr<FreePage>>,
-    data: [u8; PAGE_SIZE as usize - PTR_SIZE],
+struct FreePage<S> {
+    next: Option<PagePtr<FreePage<S>>>,
+    data: S,
 }
 
-unsafe impl Page for FreePage {}
+unsafe impl<S> Page for FreePage<S> where S: Sized {}
 
 mod utils {
     use std::{fs, io, path::Path};
@@ -339,23 +355,34 @@ mod tests {
 
     unsafe impl Page for P {}
 
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct S {
+        data: [u64; 511],
+    }
+
+    unsafe impl Page for S {}
+
     #[test]
     fn basic() {
         let cfg = StorageConfig::default();
         let dir = TempDir::new("rej").unwrap();
         let path = dir.path().join("test-basic");
 
-        let st = Storage::open(&path, true, cfg).unwrap();
+        let st = Storage::<S>::open(&path, true, cfg).unwrap();
         let ptr = st.allocate::<P>().unwrap();
         let mut page = *st.read(ptr);
         page.data[0] = 0xdeadbeef_abcdef00;
         page.data[1] = 0x1234567890;
         st.write_range(ptr, &page, 0..16).unwrap();
+        st.write_static(&S { data: [1; 511] }).unwrap();
         drop(st);
 
-        let st = Storage::open(&path, false, cfg).unwrap();
+        let st = Storage::<S>::open(&path, false, cfg).unwrap();
         let retrieved = st.read(ptr);
+        let sta = st.read_static();
         assert_eq!(*retrieved, page);
+        assert_eq!(sta.data[5], 1);
     }
 
     #[test]
@@ -364,7 +391,7 @@ mod tests {
         let dir = TempDir::new("rej").unwrap();
         let path = dir.path().join("test-allocation");
 
-        let st = Storage::open(&path, true, cfg).unwrap();
+        let st = Storage::<S>::open(&path, true, cfg).unwrap();
         let a = st.allocate::<P>().unwrap();
         let b = st.allocate::<P>().unwrap();
         let c = st.allocate::<P>().unwrap();

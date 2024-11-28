@@ -22,7 +22,9 @@ impl MyPage {
     }
 }
 
-// `MyPage` must be `repr(C)` and size must be less or equal `0x1000`
+// `MyPage` must be `repr(C)` and size must be slightly less than `0x1000`
+// precise requirement is `mem::size_of::<FreePage<MyPage>>() <= 0x1000`
+// where `FreePage<S>` is a private type
 unsafe impl Page for MyPage {}
 
 #[repr(C)]
@@ -48,21 +50,18 @@ unsafe impl Page for Photo {}
 
 fn main() {
     let cfg = StorageConfig::default();
-    let storage = Storage::open("target/db", true, cfg).unwrap();
-
-    // My page is the head of the storage at index 1.
-    // Index 0 is reserved for allocator.
-    let my_page_ptr = storage.head::<MyPage>(1).unwrap();
+    let storage = Storage::<MyPage>::open("target/db", true, cfg).unwrap();
 
     // Allocate a page for the photo, it will be linked to my page.
     let photo_ptr = storage.allocate::<Photo>().unwrap();
 
+    // `MyPage` is a static type of the storage, it always available.
     // Edit the page
-    let mut my_page = *storage.read(my_page_ptr);
+    let mut my_page = *storage.read_static();
     my_page.set_name("Vladyslav");
     // Attach the photo, so the database won't lost it.
     my_page.extension = Some(photo_ptr);
-    storage.write(my_page_ptr, &my_page).unwrap();
+    storage.write_static(&my_page).unwrap();
 
     // Edit the photo
     let mut photo = *storage.read(photo_ptr);
@@ -72,10 +71,9 @@ fn main() {
     drop(storage);
 
     // Reopen storage
-    let storage = Storage::open("target/db", false, cfg).unwrap();
+    let storage = Storage::<MyPage>::open("target/db", false, cfg).unwrap();
 
-    let my_page_ptr = storage.head::<MyPage>(1).unwrap();
-    let my_page = storage.read(my_page_ptr);
+    let my_page = storage.read_static();
     let name = my_page.get_name().unwrap();
     println!("my name is: {name}");
     assert_eq!(name, "Vladyslav");
@@ -92,12 +90,11 @@ fn main() {
     drop(photo);
 
     // let's remove the photo
-    let mut my_page = *storage.read(my_page_ptr);
+    let mut my_page = *storage.read_static();
     if let Some(photo) = my_page.extension.take() {
         storage.free(photo).unwrap();
     }
-    // the `extension` pointer is at range 40..44
-    storage.write_range(my_page_ptr, &my_page, 40..44).unwrap();
+    storage.write_static(&my_page).unwrap();
 
     drop(storage);
     fs::remove_file("target/db").unwrap();
