@@ -3,6 +3,13 @@ use std::{fs, io, path::Path};
 use memmap2::Mmap;
 
 #[cfg(unix)]
+pub fn write_at(file: &fs::File, buf: &[u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+
+    file.write_all_at(buf, offset)
+}
+
+#[cfg(unix)]
 pub fn open_file(path: impl AsRef<Path>, create: bool, direct_write: bool) -> io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 

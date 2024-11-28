@@ -1,6 +1,5 @@
 use std::{
-    fmt, fs,
-    io::{self, Seek as _, Write as _},
+    fmt, fs, io,
     marker::PhantomData,
     mem,
     num::NonZeroU32,
@@ -36,9 +35,9 @@ pub struct StorageConfig {
 
 pub struct Storage<S> {
     cfg: StorageConfig,
-    file: Mutex<fs::File>,
+    file: fs::File,
     mapped: RwLock<Mmap>,
-    freelist_lock: Mutex<()>,
+    lock: Mutex<()>,
     phantom_data: PhantomData<S>,
 }
 
@@ -135,13 +134,12 @@ where
             file.set_len(PAGE_SIZE)?;
         }
         let mapped = RwLock::new(utils::mmap(&file, cfg.mmap_populate)?);
-        let file = Mutex::new(file);
 
         Ok(Storage {
             cfg,
             file,
             mapped,
-            freelist_lock: Mutex::new(()),
+            lock: Mutex::new(()),
             phantom_data: PhantomData,
         })
     }
@@ -154,10 +152,8 @@ where
     }
 
     fn write_head(&self, head: Option<PagePtr<FreePage<S>>>) -> Result<(), StorageError> {
-        let mut lock = self.file.lock();
-        lock.seek(io::SeekFrom::Start(0))?;
         let head = head.as_ref().map_or(0, |p| p.0.get());
-        lock.write_all(&head.to_le_bytes())?;
+        utils::write_at(&self.file, &head.to_le_bytes(), 0)?;
 
         Ok(())
     }
@@ -166,13 +162,18 @@ where
         StaticPageView(self.mapped.read(), PhantomData)
     }
 
-    pub fn write_static(&self, page: &S) -> Result<(), StorageError> {
-        let mut lock = self.file.lock();
+    pub fn modify_static<F, T>(&self, mut f: F) -> Result<T, StorageError>
+    where
+        F: FnMut(&mut S) -> T,
+    {
+        let lock = self.lock.lock();
+        let mut data = FreePage::<S>::as_this(&*self.mapped.read(), None).data;
+        let result = f(&mut data);
         let offset = memoffset::offset_of!(FreePage::<S>, data);
-        lock.seek(io::SeekFrom::Start(offset as u64))?;
-        lock.write_all(&page.as_bytes())?;
+        utils::write_at(&self.file, data.as_bytes(), offset as u64)?;
+        drop(lock);
 
-        Ok(())
+        Ok(result)
     }
 
     pub fn read<T>(&self, ptr: PagePtr<T>) -> PageView<'_, T>
@@ -191,9 +192,8 @@ where
     where
         T: Page,
     {
-        let mut lock = self.file.lock();
-        lock.seek(io::SeekFrom::Start(ptr.offset() + range.start as u64))?;
-        lock.write_all(&page.as_bytes()[range])?;
+        let offset = ptr.offset() + range.start as u64;
+        utils::write_at(&self.file, &page.as_bytes()[range], offset)?;
 
         Ok(())
     }
@@ -209,11 +209,9 @@ where
     where
         T: Page,
     {
-        let lock = self.file.lock();
-        let old_len = lock.metadata()?.len();
-        lock.set_len(old_len + PAGE_SIZE)?;
-        *self.mapped.write() = utils::mmap(&lock, self.cfg.mmap_populate)?;
-        drop(lock);
+        let old_len = self.file.metadata()?.len();
+        self.file.set_len(old_len + PAGE_SIZE)?;
+        *self.mapped.write() = utils::mmap(&self.file, self.cfg.mmap_populate)?;
 
         let Some(non_zero) = NonZeroU32::new((old_len / PAGE_SIZE) as u32) else {
             return Err(StorageError::NoRootPage);
@@ -226,7 +224,7 @@ where
     where
         T: Page,
     {
-        let lock = self.freelist_lock.lock();
+        let lock = self.lock.lock();
         if let Some(result) = self.read_head() {
             let head = self.read(result).next;
             self.write_head(head)?;
@@ -245,7 +243,7 @@ where
     {
         let ptr = ptr.cast::<FreePage<S>>();
         let mut free_page = *self.read(ptr);
-        let lock = self.freelist_lock.lock();
+        let lock = self.lock.lock();
         free_page.next = self.read_head();
         self.write_range(ptr, &free_page, 0..PTR_SIZE)?;
         self.write_head(Some(ptr))?;

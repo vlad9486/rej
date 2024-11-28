@@ -57,11 +57,13 @@ fn main() {
 
     // `MyPage` is a static type of the storage, it always available.
     // Edit the page
-    let mut my_page = *storage.read_static();
-    my_page.set_name("Vladyslav");
-    // Attach the photo, so the database won't lost it.
-    my_page.extension = Some(photo_ptr);
-    storage.write_static(&my_page).unwrap();
+    storage
+        .modify_static(|my_page| {
+            my_page.set_name("Vladyslav");
+            // Attach the photo, so the database won't lost it.
+            my_page.extension = Some(photo_ptr);
+        })
+        .unwrap();
 
     // Edit the photo
     let mut photo = *storage.read(photo_ptr);
@@ -90,11 +92,12 @@ fn main() {
     drop(photo);
 
     // let's remove the photo
-    let mut my_page = *storage.read_static();
-    if let Some(photo) = my_page.extension.take() {
+    if let Some(photo) = storage
+        .modify_static(|my_page| my_page.extension.take())
+        .unwrap()
+    {
         storage.free(photo).unwrap();
     }
-    storage.write_static(&my_page).unwrap();
 
     drop(storage);
     fs::remove_file("target/db").unwrap();

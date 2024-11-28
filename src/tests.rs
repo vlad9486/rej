@@ -30,7 +30,10 @@ fn basic() {
     page.data[0] = 0xdeadbeef_abcdef00;
     page.data[1] = 0x1234567890;
     st.write_range(ptr, &page, 0..16).unwrap();
-    st.write_static(&S { data: [1; 511] }).unwrap();
+    st.modify_static(|s| {
+        *s = S { data: [1; 511] };
+    })
+    .unwrap();
     drop(st);
 
     let st = Storage::<S>::open(&path, false, cfg).unwrap();
