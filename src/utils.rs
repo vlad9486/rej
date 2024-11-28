@@ -9,6 +9,19 @@ pub fn write_at(file: &fs::File, buf: &[u8], offset: u64) -> io::Result<()> {
     file.write_all_at(buf, offset)
 }
 
+#[cfg(windows)]
+pub fn write_at(file: &fs::File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+
+    while !buf.is_empty() {
+        let len = file.seek_write(buf, offset)?;
+        buf = &buf[len..];
+        offset += len as u64;
+    }
+
+    Ok(())
+}
+
 #[cfg(unix)]
 pub fn open_file(path: impl AsRef<Path>, create: bool, direct_write: bool) -> io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -31,8 +44,9 @@ pub fn open_file(path: impl AsRef<Path>, create: bool, direct_write: bool) -> io
 }
 
 #[cfg(windows)]
-pub fn open_file(path: impl AsRef<Path>, create: bool, direct_write: bool) -> io::Result<File> {
-    let mut open_options = OpenOptions::new();
+pub fn open_file(path: impl AsRef<Path>, create: bool, direct_write: bool) -> io::Result<fs::File> {
+    let mut open_options = fs::OpenOptions::new();
+    let _ = direct_write;
     open_options.write(true).read(true);
     if create {
         open_options.create_new(true);
@@ -56,7 +70,8 @@ pub fn mmap(file: &fs::File, populate: bool) -> io::Result<Mmap> {
 
 // On Windows there is no advice to give.
 #[cfg(windows)]
-pub fn mmap(file: &File, populate: bool) -> io::Result<Mmap> {
+pub fn mmap(file: &fs::File, populate: bool) -> io::Result<Mmap> {
+    let _ = populate;
     let mmap = unsafe { Mmap::map(file)? };
     Ok(mmap)
 }
