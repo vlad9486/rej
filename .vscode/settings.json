@@ -3,8 +3,9 @@
         "freelist",
         "libc",
         "memmap",
+        "memoffset",
         "mmap",
         "repr",
-        "thiserror"
+        "thiserror",
     ]
 }

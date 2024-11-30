@@ -40,7 +40,7 @@ pub fn open_file(path: impl AsRef<Path>, create: bool, direct_write: bool) -> io
     if direct_write {
         open_options.custom_flags(O_DIRECT);
     }
-    Ok(open_options.open(path)?)
+    open_options.open(path)
 }
 
 #[cfg(windows)]
@@ -51,7 +51,7 @@ pub fn open_file(path: impl AsRef<Path>, create: bool, direct_write: bool) -> io
     if create {
         open_options.create_new(true);
     }
-    Ok(open_options.open(path)?)
+    open_options.open(path)
 }
 
 #[cfg(unix)]

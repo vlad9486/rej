@@ -1,7 +1,18 @@
-mod storage;
-pub use self::storage::*;
+mod page;
+
+mod file;
+
+mod wal;
+
+// temporal pub
+pub mod btree;
 
 mod utils;
 
-#[cfg(test)]
-mod tests;
+// temporal API
+pub use self::{page::PagePtr, file::PlainData, wal::DbView};
+
+pub use self::{
+    file::IoOptions,
+    wal::{Db, DbError},
+};
