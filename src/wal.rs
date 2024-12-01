@@ -1,11 +1,11 @@
 use std::{cmp::Ordering, io, num::NonZeroU64, path::Path};
 
-use parking_lot::{Mutex, MutexGuard};
 use thiserror::Error;
 
 use super::{
     file::{FileIo, IoOptions, PlainData, PageView},
     page::{PagePtr, RawPtr},
+    seq::{Seq, SeqLock, WAL_SIZE},
 };
 
 pub struct DbView<'a>(PageView<'a>);
@@ -29,10 +29,8 @@ pub enum DbError {
 
 pub struct Db {
     file: FileIo,
-    seq: Mutex<u64>,
+    seq: Seq,
 }
-
-const WAL_SIZE: u32 = 0x100;
 
 impl Db {
     pub fn new(path: impl AsRef<Path>, cfg: IoOptions) -> Result<Self, DbError> {
@@ -67,23 +65,20 @@ impl Db {
 
         Ok(Db {
             file,
-            seq: Mutex::new(seq),
+            seq: Seq::new(seq),
         })
     }
 
     pub fn unroll(&self) -> io::Result<()> {
         log::info!("unroll log");
 
-        let seq_lock = self.seq.lock();
-        let mut seq = *seq_lock;
+        let mut seq_lock = self.seq.lock();
         let view = self.file.read();
 
         loop {
-            let pos = (seq % u64::from(WAL_SIZE)) as u32;
-            let current = PagePtr::<RecordPage>::from_raw_number(pos);
-            let page = view.page(current);
+            let page = view.page(seq_lock.ptr());
             let Some(inner) = page.check() else {
-                seq = seq.wrapping_sub(1);
+                seq_lock.prev();
                 continue;
             };
             match inner.body {
@@ -97,7 +92,7 @@ impl Db {
                     let _ = old_head;
                 }
             }
-            seq = seq.wrapping_sub(1);
+            seq_lock.prev();
         }
 
         Ok(())
@@ -109,44 +104,28 @@ impl Db {
 
     fn write_log(
         &self,
-        mut seq_lock: MutexGuard<'_, u64>,
+        mut seq_lock: SeqLock<'_>,
         body: Record,
         freelist: Option<PagePtr<FreePage>>,
     ) -> io::Result<()> {
-        let old = *seq_lock;
-        let freelist = freelist.or_else(|| {
-            let pos = (old % u64::from(WAL_SIZE)) as u32;
-            self.file
-                .read()
-                .page(PagePtr::<RecordPage>::from_raw_number(pos))
-                .inner
-                .freelist
-        });
-
-        let seq = old.wrapping_add(1);
-        let pos = (seq % u64::from(WAL_SIZE)) as u32;
-        let inner = RecordSeq {
+        seq_lock.next();
+        let seq = seq_lock.seq();
+        let page = RecordPage::new(RecordSeq {
             seq,
             freelist,
             body,
-        };
-        let page = RecordPage::new(inner);
-        self.file
-            .write(PagePtr::<RecordPage>::from_raw_number(pos), &page)?;
+        });
+        self.file.write(seq_lock.ptr(), &page)?;
         log::info!("freelist: {freelist:?}, action: {body:?}");
-        *seq_lock = seq;
 
         Ok(())
     }
 
     pub fn alloc<T>(&self) -> io::Result<PagePtr<T>> {
         let seq_lock = self.seq.lock();
-        let seq = *seq_lock;
-        let pos = (seq % u64::from(WAL_SIZE)) as u32;
-        let current = PagePtr::<RecordPage>::from_raw_number(pos);
 
         let view = self.file.read();
-        let (old_head, next) = if let Some(head) = view.page(current).inner.freelist {
+        let (old_head, next) = if let Some(head) = view.page(seq_lock.ptr()).inner.freelist {
             let next = view.page(Some(head)).next;
             drop(view);
             (head, next)
@@ -162,18 +141,15 @@ impl Db {
 
     pub fn free<T>(&self, ptr: PagePtr<T>) -> io::Result<()> {
         let seq_lock = self.seq.lock();
-        let seq = *seq_lock;
-        let pos = (seq % u64::from(WAL_SIZE)) as u32;
-        let current = PagePtr::<RecordPage>::from_raw_number(pos);
 
         let view = self.file.read();
-        let old_head = view.page(current).inner.freelist;
+        let old_head = view.page(seq_lock.ptr()).inner.freelist;
 
         // write current head into the page to free
         let ptr = ptr.cast::<FreePage>();
         self.file.write(Some(ptr), &FreePage { next: old_head })?;
 
-        self.write_log(seq_lock, Record::Free { old_head }, Some(ptr.cast()))?;
+        self.write_log(seq_lock, Record::Free { old_head }, Some(ptr))?;
 
         Ok(())
     }
@@ -181,7 +157,7 @@ impl Db {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct RecordPage {
+pub struct RecordPage {
     checksum: Option<NonZeroU64>,
     inner: RecordSeq,
 }

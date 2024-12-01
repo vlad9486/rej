@@ -2,6 +2,7 @@ mod page;
 
 mod file;
 
+mod seq;
 mod wal;
 
 // temporal pub

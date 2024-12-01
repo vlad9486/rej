@@ -36,13 +36,13 @@ pub fn get<const KEY_SIZE: usize>(
 }
 
 pub fn insert<const KEY_SIZE: usize>(
-    file: FileIo,
-    stem_ptr: &[PagePtr<NodePage<KEY_SIZE>>],
+    file: &FileIo,
+    stem_ptr: &mut &[PagePtr<NodePage<KEY_SIZE>>],
     key: &[u8; KEY_SIZE],
     data: DataDescriptor,
 ) -> Option<DataDescriptor> {
     let _ = (file, stem_ptr, key, data);
-    let _ = Lengths::default().set(0, data.len);
+    Lengths::default().set(0, data.len);
     unimplemented!()
 }
 
