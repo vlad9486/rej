@@ -1,7 +1,7 @@
 use super::{
     file::{PlainData, FileIo},
     page::{PagePtr, PAGE_SIZE},
-    wal::DbView,
+    db::DbView,
 };
 
 const M: usize = 128;

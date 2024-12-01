@@ -1,5 +1,6 @@
 use std::{
     fs, io, mem,
+    ops::Range,
     path::Path,
     slice,
     sync::atomic::{AtomicU64, Ordering},
@@ -73,6 +74,19 @@ impl FileIo {
 
     pub fn read(&self) -> PageView<'_> {
         PageView(self.mapped.read())
+    }
+
+    pub fn write_range<T>(
+        &self,
+        ptr: Option<PagePtr<T>>,
+        page: &T,
+        range: Range<usize>,
+    ) -> io::Result<()>
+    where
+        T: PlainData,
+    {
+        let offset = ptr.map_or(0, PagePtr::raw_offset) + range.start as u64;
+        utils::write_at(&self.file, &page.as_bytes()[range], offset)
     }
 
     pub fn write<T>(&self, ptr: Option<PagePtr<T>>, page: &T) -> io::Result<()>

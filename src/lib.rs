@@ -2,8 +2,8 @@ mod page;
 
 mod file;
 
-mod seq;
 mod wal;
+mod db;
 
 // temporal pub
 pub mod btree;
@@ -11,9 +11,10 @@ pub mod btree;
 mod utils;
 
 // temporal API
-pub use self::{page::PagePtr, file::PlainData, wal::DbView};
+pub use self::{page::PagePtr, file::PlainData, db::DbView};
 
 pub use self::{
     file::IoOptions,
-    wal::{Db, DbError},
+    wal::WalError,
+    db::{Db, DbError},
 };
