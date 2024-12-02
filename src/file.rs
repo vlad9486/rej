@@ -86,7 +86,11 @@ impl FileIo {
         T: PlainData,
     {
         let offset = ptr.into().map_or(0, PagePtr::raw_offset) + range.start as u64;
-        utils::write_at(&self.file, &page.as_bytes()[range], offset)
+        let slice = page
+            .as_bytes()
+            .get(range)
+            .expect("`range` must be in the range");
+        utils::write_at(&self.file, slice, offset)
     }
 
     pub fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, page: &T) -> io::Result<()>

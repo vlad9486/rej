@@ -1,11 +1,16 @@
-# Minimalistic storage for database
+# Minimalistic database
 
-The library encapsulates low-level details of storage on Unix-like and Windows.
+The library allows to store a value size no larger than the page size minus 
+the metadata size (4088 bytes) associated with 11-byte keys.
 
-Creates a single file, allows to allocate/deallocate persistent pages and read/write them.
-
-Intended to be used as a low-level building block of the real full-featured database.
+Partially guaranteed ACID.
 
 TODO:
-* Write-ahead logging, for atomicity and crash recovery.
+* Garbage collection.
+* Proper write-ahead log unroll.
+* Tests for ACID.
+* Extent allocation.
+* Unlimited value.
+* Longer keys.
+* B-Tree algorithms.
 * Full encryption (Adiantum).

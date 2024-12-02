@@ -30,7 +30,6 @@ struct WalInner {
 impl Wal {
     pub fn new(create: bool, file: &FileIo) -> Result<Self, WalError> {
         let inner = if create {
-            log::info!("initialize empty database");
             let head = PagePtr::from_raw_number(WAL_SIZE)
                 .ok_or(io::Error::from(io::ErrorKind::UnexpectedEof))?;
             for pos in 0..WAL_SIZE {
@@ -118,8 +117,6 @@ impl WalLock<'_> {
     }
 
     pub fn unroll(mut self, file: &FileIo) -> Result<(), WalError> {
-        log::info!("unroll log");
-
         let view = file.read();
 
         let mut reverse = self.0.seq;
@@ -156,7 +153,6 @@ impl WalLock<'_> {
             }
             reverse = reverse.wrapping_sub(1);
         }
-        log::info!("unrolled");
 
         Ok(())
     }
@@ -170,7 +166,7 @@ impl WalLock<'_> {
             (head, next)
         } else {
             drop(view);
-            let head = file.grow().map(Option::unwrap)?;
+            let head = file.grow()?.expect("grow must yield value");
             (head, None)
         };
 
@@ -202,7 +198,7 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    pub fn new_head(&mut self, file: &FileIo, head: PagePtr<NodePage>) -> Result<(), WalError> {
+    pub fn new_head(mut self, file: &FileIo, head: PagePtr<NodePage>) -> Result<(), WalError> {
         self.0.head = head;
         self.write(file, Record::Done)
     }

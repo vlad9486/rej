@@ -2,7 +2,7 @@ use std::{io, mem};
 
 use super::{
     file::{PlainData, FileIo, PageView},
-    page::{PagePtr, PAGE_SIZE},
+    page::{PagePtr, RawPtr, PAGE_SIZE},
 };
 
 const M: usize = 256;
@@ -27,12 +27,13 @@ pub fn get(
 pub fn insert(
     file: &FileIo,
     old_head: PagePtr<NodePage>,
-    stem_ptr: &mut &[PagePtr<NodePage>],
+    stem_ptr: &mut &[PagePtr<DataPage>],
     key: &[u8; 11],
-    data: PagePtr<DataPage>,
-) -> io::Result<Option<PagePtr<DataPage>>> {
+) -> io::Result<PagePtr<DataPage>> {
     let mut take = || {
-        let (ptr, rest) = stem_ptr.split_first().unwrap();
+        let (ptr, rest) = stem_ptr
+            .split_first()
+            .expect("`stem_ptr` must be big enough");
         *stem_ptr = rest;
         *ptr
     };
@@ -41,24 +42,17 @@ pub fn insert(
     let old_ptr = old_head;
 
     // TODO: loop, balance
-    let new_ptr = take();
+    let new_ptr = take().cast();
     let mut node = *view_lock.page(old_ptr);
     let idx = node.keys().binary_search(key).unwrap_or_else(|idx| {
-        let old = node.len;
-        node.len = old + 1;
-        for i in (idx..(old as usize)).rev() {
-            node.keys[i + 1] = node.keys[i];
-            node.child[i + 1] = node.child[i];
-        }
-        node.keys[idx] = *key;
-        node.child[idx] = Child { leaf: None };
+        node.insert(idx, key);
         idx
     });
     node.leaf = true;
-    let old = unsafe { &mut node.child[idx].leaf }.replace(data);
+    let ptr = *unsafe { &mut node.child[idx].leaf }.get_or_insert_with(take);
     file.write(new_ptr, &node)?;
 
-    Ok(old)
+    Ok(ptr)
 }
 
 #[repr(C)]
@@ -70,14 +64,26 @@ pub struct NodePage {
     prev: Option<PagePtr<NodePage>>,
     deep: Option<PagePtr<KeyPage>>,
     leaf: bool,
-    len: u8,
+    len: usize,
 }
 
 unsafe impl PlainData for NodePage {}
 
 impl NodePage {
     fn keys(&self) -> &[[u8; 11]] {
-        &self.keys[..self.len as usize]
+        &self.keys[..self.len]
+    }
+
+    /// panics if `self.len` is `M`
+    fn insert(&mut self, idx: usize, key: &[u8; 11]) {
+        let old = self.len;
+        self.len = old + 1;
+        for i in (idx..old).rev() {
+            self.keys[i + 1] = self.keys[i];
+            self.child[i + 1] = self.child[i];
+        }
+        self.keys[idx] = *key;
+        self.child[idx] = Child { leaf: None };
     }
 }
 
