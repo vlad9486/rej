@@ -85,6 +85,10 @@ impl Wal {
 pub struct WalLock<'a>(MutexGuard<'a, WalInner>);
 
 impl WalLock<'_> {
+    pub fn seq(&self) -> u64 {
+        self.0.seq
+    }
+
     fn ptr(&self) -> Option<PagePtr<RecordPage>> {
         Self::seq_to_ptr(self.0.seq)
     }
@@ -206,6 +210,19 @@ impl WalLock<'_> {
     pub fn current_head(&self) -> PagePtr<NodePage> {
         self.0.head
     }
+
+    pub fn free_list_size(&self, file: &FileIo) -> u32 {
+        let mut x = 0;
+        let mut freelist = self.0.freelist;
+
+        let view = file.read();
+
+        while freelist.is_some() {
+            x += 1;
+            freelist = view.page(freelist).next;
+        }
+        x
+    }
 }
 
 #[repr(C)]
@@ -312,13 +329,13 @@ mod tests {
         let file = FileIo::new(&path, true, cfg).unwrap();
         let wal = Wal::new(true, &file).unwrap();
         let ptr = wal.lock().alloc::<()>(&file).unwrap();
-        assert_eq!(ptr.raw_number(), 0x100);
+        assert_eq!(ptr.raw_number(), 0x101);
         wal.lock().free(&file, ptr).unwrap();
         drop(wal);
 
         let wal = Wal::new(false, &file).unwrap();
         let ptr = wal.lock().alloc::<()>(&file).unwrap();
-        assert_eq!(ptr.raw_number(), 0x100);
+        assert_eq!(ptr.raw_number(), 0x101);
         drop(wal);
 
         fs::copy(path, "target/db").unwrap();

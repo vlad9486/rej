@@ -9,6 +9,7 @@ fn main() {
     fs::remove_file("target/db").unwrap_or_default();
     let cfg = Default::default();
     let db = Db::new("target/db", cfg).unwrap();
+    log::info!("{:?}", db.stats());
 
     let data = |s| (s..128u8).collect::<Vec<u8>>();
 
@@ -26,6 +27,8 @@ fn main() {
         .unwrap()
         .write(&db, &data(30))
         .unwrap();
+
+    log::info!("{:?}", db.stats());
 
     drop(db);
     let db = Db::new("target/db", cfg).unwrap();

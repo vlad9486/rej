@@ -12,5 +12,5 @@ mod utils;
 pub use self::{
     file::IoOptions,
     wal::WalError,
-    db::{Db, DbError, DbValue},
+    db::{Db, DbStats, DbError, DbValue},
 };

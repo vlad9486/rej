@@ -116,4 +116,8 @@ impl FileIo {
 
         Ok(PagePtr::from_raw_offset(old_len))
     }
+
+    pub fn pages(&self) -> u32 {
+        (self.file_len.load(Ordering::SeqCst) / PAGE_SIZE) as u32
+    }
 }

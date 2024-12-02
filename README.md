@@ -6,7 +6,6 @@ the metadata size (4088 bytes) associated with 11-byte keys.
 Partially guaranteed ACID.
 
 TODO:
-* Garbage collection.
 * Proper write-ahead log unroll.
 * Tests for ACID.
 * Extent allocation.

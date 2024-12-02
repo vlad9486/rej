@@ -5,7 +5,7 @@ use thiserror::Error;
 use super::{
     file::{FileIo, IoOptions},
     page::{PagePtr, RawPtr},
-    wal::{Wal, WalError},
+    wal::{Wal, WalError, WAL_SIZE},
     btree::{self, DataPage},
 };
 
@@ -58,6 +58,13 @@ pub enum DbError {
     WalError(#[from] WalError),
 }
 
+#[derive(Debug)]
+pub struct DbStats {
+    pub total: u32,
+    pub free: u32,
+    pub seq: u64,
+}
+
 pub struct Db {
     file: FileIo,
     wal: Wal,
@@ -87,20 +94,25 @@ impl Db {
         Some(DbValue { len, ptr })
     }
 
-    // TODO: collect garbage
     pub fn insert(&self, key: &[u8; 11]) -> Result<DbValue, DbError> {
         let mut wal_lock = self.wal.lock();
 
-        let stem_ptr = iter::repeat_with(|| wal_lock.alloc(&self.file))
+        let mut stem_ptr = iter::repeat_with(|| wal_lock.alloc(&self.file))
             .filter_map(Result::ok)
             .take(6)
+            .map(Some)
             .collect::<Vec<_>>();
-        let mut stem_ptr_slice = stem_ptr.as_slice();
-        let new_head = (*stem_ptr_slice.first().expect("cannot fail")).cast();
+        let new_head = stem_ptr
+            .first()
+            .expect("cannot fail")
+            .expect("cannot fail")
+            .cast();
         let old_head = wal_lock.current_head();
-        let ptr = btree::insert(&self.file, old_head, &mut stem_ptr_slice, key)?;
-        for unused in stem_ptr_slice {
-            wal_lock.free(&self.file, *unused)?;
+        let ptr = btree::insert(&self.file, old_head, &mut stem_ptr, key)?;
+        for unused in stem_ptr {
+            if let Some(unused) = unused {
+                wal_lock.free(&self.file, unused)?;
+            }
         }
         wal_lock.new_head(&self.file, new_head)?;
 
@@ -112,5 +124,15 @@ impl Db {
     pub fn remove(&self, key: &[u8; 11]) -> Result<(), DbError> {
         let _ = key;
         unimplemented!()
+    }
+
+    pub fn stats(&self) -> DbStats {
+        let total = self.file.pages() - WAL_SIZE;
+
+        let wal_lock = self.wal.lock();
+        let free = wal_lock.free_list_size(&self.file);
+        let seq = wal_lock.seq();
+
+        DbStats { total, free, seq }
     }
 }

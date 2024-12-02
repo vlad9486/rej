@@ -27,29 +27,28 @@ pub fn get(
 pub fn insert(
     file: &FileIo,
     old_head: PagePtr<NodePage>,
-    stem_ptr: &mut &[PagePtr<DataPage>],
+    stem_ptr: &mut [Option<PagePtr<DataPage>>],
     key: &[u8; 11],
 ) -> io::Result<PagePtr<DataPage>> {
-    let mut take = || {
-        let (ptr, rest) = stem_ptr
-            .split_first()
-            .expect("`stem_ptr` must be big enough");
-        *stem_ptr = rest;
-        *ptr
+    let mut i = 0;
+    let mut take = |recycle| {
+        let ptr = stem_ptr.get_mut(i).expect("`stem_ptr` must be big enough");
+        i += 1;
+        mem::replace(ptr, recycle).expect("cannot fail")
     };
     let view_lock = file.read();
 
     let old_ptr = old_head;
 
     // TODO: loop, balance
-    let new_ptr = take().cast();
+    let new_ptr = take(Some(old_ptr.cast())).cast();
     let mut node = *view_lock.page(old_ptr);
     let idx = node.keys().binary_search(key).unwrap_or_else(|idx| {
         node.insert(idx, key);
         idx
     });
     node.leaf = true;
-    let ptr = *unsafe { &mut node.child[idx].leaf }.get_or_insert_with(take);
+    let ptr = *unsafe { &mut node.child[idx].leaf }.get_or_insert_with(|| take(None));
     file.write(new_ptr, &node)?;
 
     Ok(ptr)
