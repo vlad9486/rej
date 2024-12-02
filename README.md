@@ -5,11 +5,20 @@ the metadata size (4088 bytes) associated with 11-byte keys.
 
 Partially guaranteed ACID.
 
-TODO:
-* Proper write-ahead log unroll.
-* Tests for ACID.
+## TODO:
+
+### Difficult
+
 * Extent allocation.
-* Unlimited value.
-* Longer keys.
+* Proper write-ahead log unroll.
+
+### Moderate
+
 * B-Tree algorithms.
 * Full encryption (Adiantum).
+* Unlimited value.
+
+### Easy
+
+* Tests for ACID.
+* Longer keys.
