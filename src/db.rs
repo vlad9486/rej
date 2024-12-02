@@ -9,45 +9,9 @@ use super::{
     btree::{self, DataPage},
 };
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DbValue {
-    len: usize,
     ptr: PagePtr<DataPage>,
-}
-
-impl DbValue {
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// # Panics
-    /// if buf is smaller than the value size
-    pub fn read(&self, db: &Db, buf: &mut [u8]) {
-        let read_lock = db.file.read();
-        let data = &read_lock.page(self.ptr).data;
-        buf.clone_from_slice(&data[..buf.len()]);
-    }
-
-    pub fn read_to_vec(&self, db: &Db) -> Vec<u8> {
-        let mut v = vec![0; self.len];
-        self.read(db, &mut v);
-        v
-    }
-
-    /// # Panics
-    /// if buf is bigger than `DataPage::CAPACITY`
-    /// unlimited value size is not implemented yet
-    pub fn write(&self, db: &Db, buf: &[u8]) -> io::Result<()> {
-        let mut page = DataPage {
-            len: buf.len(),
-            data: [0; DataPage::CAPACITY],
-        };
-        page.data[..buf.len()].clone_from_slice(buf);
-        db.file.write(self.ptr, &page)
-    }
 }
 
 #[derive(Debug, Error)]
@@ -86,27 +50,57 @@ impl Db {
         Ok(Db { file, wal })
     }
 
+    /// # Panics
+    /// if offset plus buf length is bigger than `DataPage::CAPACITY`
+    /// unlimited value size is not implemented yet
+    pub fn write(&self, value: &DbValue, offset: usize, buf: &[u8]) -> io::Result<()> {
+        let mut page = DataPage {
+            len: buf.len(),
+            data: [0; DataPage::CAPACITY],
+        };
+        page.data[offset..][..buf.len()].clone_from_slice(buf);
+        self.file.write(value.ptr, &page)
+    }
+
+    pub fn length(&self, value: &DbValue) -> usize {
+        let read_lock = self.file.read();
+        read_lock.page(value.ptr).len
+    }
+
+    /// # Panics
+    /// if offset plus buf length is smaller than the value size
+    pub fn read(&self, value: &DbValue, offset: usize, buf: &mut [u8]) {
+        let read_lock = self.file.read();
+        let page = read_lock.page(value.ptr);
+        let data = &page.data[..page.len][offset..][..buf.len()];
+        buf.clone_from_slice(data);
+    }
+
+    pub fn read_to_vec(&self, value: &DbValue) -> Vec<u8> {
+        let read_lock = self.file.read();
+        let page = read_lock.page(value.ptr);
+        page.data[..page.len].to_vec()
+    }
+
     pub fn retrieve(&self, key: &[u8; 11]) -> Option<DbValue> {
         let head_ptr = self.wal.lock().current_head();
         let view = self.file.read();
         let ptr = btree::get(&view, head_ptr, key)?;
-        let len = view.page(ptr).len;
-        Some(DbValue { len, ptr })
+        Some(DbValue { ptr })
     }
 
     pub fn insert(&self, key: &[u8; 11]) -> Result<DbValue, DbError> {
         let mut wal_lock = self.wal.lock();
 
-        let mut stem_ptr = iter::repeat_with(|| wal_lock.alloc(&self.file))
-            .filter_map(Result::ok)
-            .take(6)
+        let new_head = wal_lock.alloc(&self.file)?;
+        let mut stem_ptr = iter::once(new_head.cast())
+            .chain(
+                iter::repeat_with(|| wal_lock.alloc(&self.file))
+                    .filter_map(Result::ok)
+                    .take(5),
+            )
             .map(Some)
             .collect::<Vec<_>>();
-        let new_head = stem_ptr
-            .first()
-            .expect("cannot fail")
-            .expect("cannot fail")
-            .cast();
         let old_head = wal_lock.current_head();
         let ptr = btree::insert(&self.file, old_head, &mut stem_ptr, key)?;
         for unused in stem_ptr {
@@ -116,8 +110,7 @@ impl Db {
         }
         wal_lock.new_head(&self.file, new_head)?;
 
-        let len = self.file.read().page(ptr).len;
-        Ok(DbValue { len, ptr })
+        Ok(DbValue { ptr })
     }
 
     // TODO: remove value
