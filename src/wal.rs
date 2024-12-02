@@ -6,6 +6,7 @@ use thiserror::Error;
 use super::{
     file::{FileIo, PlainData},
     page::{PagePtr, RawPtr, PAGE_SIZE},
+    btree::NodePage,
 };
 
 #[derive(Debug, Error)]
@@ -18,16 +19,25 @@ pub enum WalError {
 
 pub const WAL_SIZE: u32 = 0x100;
 
-pub struct Wal(Mutex<u64>);
+pub struct Wal(Mutex<WalInner>);
+
+struct WalInner {
+    seq: u64,
+    head: PagePtr<NodePage>,
+    freelist: Option<PagePtr<FreePage>>,
+}
 
 impl Wal {
     pub fn new(create: bool, file: &FileIo) -> Result<Self, WalError> {
-        let seq = if create {
+        let inner = if create {
             log::info!("initialize empty database");
+            let head = PagePtr::from_raw_number(WAL_SIZE)
+                .ok_or(io::Error::from(io::ErrorKind::UnexpectedEof))?;
             for pos in 0..WAL_SIZE {
                 let inner = RecordSeq {
                     seq: pos.into(),
                     freelist: None,
+                    head,
                     body: Record::Done,
                 };
                 let page = RecordPage::new(inner);
@@ -35,21 +45,37 @@ impl Wal {
 
                 file.write(ptr, &page)?;
             }
-            (WAL_SIZE - 1).into()
+            file.grow::<NodePage>()?;
+            file.sync()?;
+
+            Mutex::new(WalInner {
+                seq: (WAL_SIZE - 1).into(),
+                head,
+                freelist: None,
+            })
         } else {
             let view = file.read();
 
-            let page = (0..WAL_SIZE)
+            let RecordSeq {
+                seq,
+                freelist,
+                head,
+                ..
+            } = *(0..WAL_SIZE)
                 .map(PagePtr::from_raw_number)
                 .map(|ptr| view.page::<RecordPage>(ptr))
                 .filter_map(RecordPage::check)
                 .max()
                 .ok_or(WalError::BadWal)?;
 
-            page.seq
+            Mutex::new(WalInner {
+                seq,
+                head,
+                freelist,
+            })
         };
 
-        Ok(Self(Mutex::new(seq)))
+        Ok(Wal(inner))
     }
 
     pub fn lock(&self) -> WalLock<'_> {
@@ -57,15 +83,11 @@ impl Wal {
     }
 }
 
-pub struct WalLock<'a>(MutexGuard<'a, u64>);
+pub struct WalLock<'a>(MutexGuard<'a, WalInner>);
 
 impl WalLock<'_> {
-    fn seq(&self) -> u64 {
-        *self.0
-    }
-
     fn ptr(&self) -> Option<PagePtr<RecordPage>> {
-        Self::seq_to_ptr(self.seq())
+        Self::seq_to_ptr(self.0.seq)
     }
 
     fn seq_to_ptr(seq: u64) -> Option<PagePtr<RecordPage>> {
@@ -74,24 +96,23 @@ impl WalLock<'_> {
     }
 
     fn next(&mut self) {
-        *self.0 = self.0.wrapping_add(1);
+        self.0.seq = self.0.seq.wrapping_add(1);
     }
 
-    fn write(
-        &mut self,
-        file: &FileIo,
-        body: Record,
-        freelist: Option<PagePtr<FreePage>>,
-    ) -> Result<(), WalError> {
+    fn write(&mut self, file: &FileIo, body: Record) -> Result<(), WalError> {
         self.next();
-        let seq = self.seq();
+        let seq = self.0.seq;
+        let head = self.current_head();
+        let freelist = self.0.freelist;
         let page = RecordPage::new(RecordSeq {
             seq,
             freelist,
+            head,
             body,
         });
         file.write(self.ptr(), &page)?;
-        log::info!("freelist: {freelist:?}, action: {body:?}");
+        file.sync()?;
+        log::debug!("freelist: {freelist:?}, head: {head:?}, action: {body:?}");
 
         Ok(())
     }
@@ -101,7 +122,7 @@ impl WalLock<'_> {
 
         let view = file.read();
 
-        let mut reverse = self.seq();
+        let mut reverse = self.0.seq;
 
         loop {
             let page = view.page(Self::seq_to_ptr(reverse));
@@ -113,7 +134,8 @@ impl WalLock<'_> {
                 Record::Done => break,
                 Record::Allocate { old_head } => {
                     self.next();
-                    self.write(file, Record::RevertedAlloc, Some(old_head))?;
+                    self.0.freelist = Some(old_head);
+                    self.write(file, Record::RevertedAlloc)?;
                 }
                 Record::Free { old_data } => {
                     let old_head = view.page(inner.freelist).next;
@@ -126,7 +148,8 @@ impl WalLock<'_> {
                         0..mem::size_of::<Option<PagePtr<FreePage>>>(),
                     )?;
                     self.next();
-                    self.write(file, Record::RevertedFree, old_head)?;
+                    self.0.freelist = old_head;
+                    self.write(file, Record::RevertedFree)?;
                 }
                 Record::RevertedAlloc => {}
                 Record::RevertedFree => {}
@@ -138,11 +161,11 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    pub fn alloc<T>(mut self, file: &FileIo) -> Result<PagePtr<T>, WalError> {
+    pub fn alloc<T>(&mut self, file: &FileIo) -> Result<PagePtr<T>, WalError> {
         let view = file.read();
 
         let (old_head, next) = if let Some(head) = view.page(self.ptr()).inner.freelist {
-            let next = view.page(Some(head)).next;
+            let next = view.page(head).next;
             drop(view);
             (head, next)
         } else {
@@ -151,22 +174,24 @@ impl WalLock<'_> {
             (head, None)
         };
 
-        self.write(&file, Record::Allocate { old_head }, next)?;
+        self.0.freelist = next;
+        self.write(file, Record::Allocate { old_head })?;
 
         Ok(old_head.cast())
     }
 
-    pub fn free<T>(mut self, file: &FileIo, ptr: PagePtr<T>) -> Result<(), WalError> {
+    pub fn free<T>(&mut self, file: &FileIo, ptr: PagePtr<T>) -> Result<(), WalError> {
         let view = file.read();
         let old_head = view.page(self.ptr()).inner.freelist;
 
         // write current head into the page to free
         let ptr = ptr.cast::<FreePage>();
         // store in log
-        let old_data = view.page(Some(ptr)).next;
-        self.write(file, Record::Free { old_data }, Some(ptr))?;
+        let old_data = view.page(ptr).next;
+        self.0.freelist = Some(ptr);
+        self.write(file, Record::Free { old_data })?;
         file.write_range(
-            Some(ptr),
+            ptr,
             &FreePage {
                 next: old_head,
                 _data: [0; FreePage::PAD],
@@ -175,6 +200,15 @@ impl WalLock<'_> {
         )?;
 
         Ok(())
+    }
+
+    pub fn new_head(&mut self, file: &FileIo, head: PagePtr<NodePage>) -> Result<(), WalError> {
+        self.0.head = head;
+        self.write(file, Record::Done)
+    }
+
+    pub fn current_head(&self) -> PagePtr<NodePage> {
+        self.0.head
     }
 }
 
@@ -210,6 +244,7 @@ impl RecordPage {
 struct RecordSeq {
     seq: u64,
     freelist: Option<PagePtr<FreePage>>,
+    head: PagePtr<NodePage>,
     body: Record,
 }
 
@@ -257,3 +292,39 @@ impl FreePage {
 }
 
 unsafe impl PlainData for FreePage {}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempdir::TempDir;
+
+    use super::{
+        RawPtr, Wal,
+        super::file::{FileIo, IoOptions},
+    };
+
+    #[test]
+    fn allocate() {
+        let env = env_logger::Env::new().filter_or("RUST_LOG", "info");
+        env_logger::try_init_from_env(env).unwrap_or_default();
+
+        let cfg = IoOptions::default();
+        let dir = TempDir::new("rej").unwrap();
+        let path = dir.path().join("test-basic");
+
+        let file = FileIo::new(&path, true, cfg).unwrap();
+        let wal = Wal::new(true, &file).unwrap();
+        let ptr = wal.lock().alloc::<()>(&file).unwrap();
+        assert_eq!(ptr.raw_number(), 0x100);
+        wal.lock().free(&file, ptr).unwrap();
+        drop(wal);
+
+        let wal = Wal::new(false, &file).unwrap();
+        let ptr = wal.lock().alloc::<()>(&file).unwrap();
+        assert_eq!(ptr.raw_number(), 0x100);
+        drop(wal);
+
+        fs::copy(path, "target/db").unwrap();
+    }
+}

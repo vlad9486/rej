@@ -34,11 +34,11 @@ where
 pub struct PageView<'a>(RwLockReadGuard<'a, Mmap>);
 
 impl PageView<'_> {
-    pub fn page<T>(&self, ptr: Option<PagePtr<T>>) -> &T
+    pub fn page<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> &T
     where
         T: PlainData,
     {
-        let offset = ptr.map_or(0, PagePtr::raw_offset) as usize;
+        let offset = ptr.into().map_or(0, PagePtr::raw_offset) as usize;
         T::as_this(&self.0, offset)
     }
 }
@@ -78,23 +78,27 @@ impl FileIo {
 
     pub fn write_range<T>(
         &self,
-        ptr: Option<PagePtr<T>>,
+        ptr: impl Into<Option<PagePtr<T>>>,
         page: &T,
         range: Range<usize>,
     ) -> io::Result<()>
     where
         T: PlainData,
     {
-        let offset = ptr.map_or(0, PagePtr::raw_offset) + range.start as u64;
+        let offset = ptr.into().map_or(0, PagePtr::raw_offset) + range.start as u64;
         utils::write_at(&self.file, &page.as_bytes()[range], offset)
     }
 
-    pub fn write<T>(&self, ptr: Option<PagePtr<T>>, page: &T) -> io::Result<()>
+    pub fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, page: &T) -> io::Result<()>
     where
         T: PlainData,
     {
-        let offset = ptr.map_or(0, PagePtr::raw_offset);
+        let offset = ptr.into().map_or(0, PagePtr::raw_offset);
         utils::write_at(&self.file, page.as_bytes(), offset)
+    }
+
+    pub fn sync(&self) -> io::Result<()> {
+        self.file.sync_all()
     }
 
     pub fn grow<T>(&self) -> io::Result<Option<PagePtr<T>>> {
