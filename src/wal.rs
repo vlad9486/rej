@@ -19,13 +19,7 @@ pub enum WalError {
 
 pub const WAL_SIZE: u32 = 0x100;
 
-pub struct Wal(Mutex<WalInner>);
-
-struct WalInner {
-    seq: u64,
-    head: PagePtr<NodePage>,
-    freelist: Option<PagePtr<FreePage>>,
-}
+pub struct Wal(Mutex<RecordSeq>);
 
 impl Wal {
     pub fn new(create: bool, file: &FileIo) -> Result<Self, WalError> {
@@ -37,9 +31,8 @@ impl Wal {
                     seq: pos.into(),
                     freelist: None,
                     head,
-                    body: Record::Done,
                 };
-                let page = RecordPage::new(inner);
+                let page = RecordPage::new(inner, Record::Done);
                 let ptr = file.grow()?;
 
                 file.write(ptr, &page)?;
@@ -47,31 +40,23 @@ impl Wal {
             file.grow::<NodePage>()?;
             file.sync()?;
 
-            Mutex::new(WalInner {
+            Mutex::new(RecordSeq {
                 seq: (WAL_SIZE - 1).into(),
-                head,
                 freelist: None,
+                head,
             })
         } else {
             let view = file.read();
 
-            let RecordSeq {
-                seq,
-                freelist,
-                head,
-                ..
-            } = *(0..WAL_SIZE)
+            let inner = *(0..WAL_SIZE)
                 .map(PagePtr::from_raw_number)
                 .map(|ptr| view.page::<RecordPage>(ptr))
                 .filter_map(RecordPage::check)
+                .map(|(inner, _)| inner)
                 .max()
                 .ok_or(WalError::BadWal)?;
 
-            Mutex::new(WalInner {
-                seq,
-                head,
-                freelist,
-            })
+            Mutex::new(inner)
         };
 
         Ok(Wal(inner))
@@ -82,7 +67,7 @@ impl Wal {
     }
 }
 
-pub struct WalLock<'a>(MutexGuard<'a, WalInner>);
+pub struct WalLock<'a>(MutexGuard<'a, RecordSeq>);
 
 impl WalLock<'_> {
     pub fn seq(&self) -> u64 {
@@ -107,12 +92,14 @@ impl WalLock<'_> {
         let seq = self.0.seq;
         let head = self.current_head();
         let freelist = self.0.freelist;
-        let page = RecordPage::new(RecordSeq {
-            seq,
-            freelist,
-            head,
+        let page = RecordPage::new(
+            RecordSeq {
+                seq,
+                freelist,
+                head,
+            },
             body,
-        });
+        );
         file.write(self.ptr(), &page)?;
         file.sync()?;
         log::debug!("freelist: {freelist:?}, head: {head:?}, action: {body:?}");
@@ -127,11 +114,11 @@ impl WalLock<'_> {
 
         loop {
             let page = view.page(Self::seq_to_ptr(reverse));
-            let Some(inner) = page.check() else {
+            let Some((inner, body)) = page.check() else {
                 reverse = reverse.wrapping_sub(1);
                 continue;
             };
-            match inner.body {
+            match *body {
                 Record::Done => break,
                 Record::Allocate { old_head } => {
                     self.next();
@@ -230,6 +217,7 @@ impl WalLock<'_> {
 struct RecordPage {
     checksum: Option<NonZeroU64>,
     inner: RecordSeq,
+    body: Record,
 }
 
 impl RecordPage {
@@ -241,14 +229,18 @@ impl RecordPage {
         unsafe { NonZeroU64::new_unchecked(checksum) }
     }
 
-    fn new(inner: RecordSeq) -> Self {
+    fn new(inner: RecordSeq, body: Record) -> Self {
         let checksum = Some(Self::checksum(&inner));
-        RecordPage { inner, checksum }
+        RecordPage {
+            checksum,
+            inner,
+            body,
+        }
     }
 
-    fn check(&self) -> Option<&RecordSeq> {
+    fn check(&self) -> Option<(&RecordSeq, &Record)> {
         // return None if no checksum or checksum is wrong
-        (self.checksum? == Self::checksum(&self.inner)).then_some(&self.inner)
+        (self.checksum? == Self::checksum(&self.inner)).then_some((&self.inner, &self.body))
     }
 }
 
@@ -258,7 +250,6 @@ struct RecordSeq {
     seq: u64,
     freelist: Option<PagePtr<FreePage>>,
     head: PagePtr<NodePage>,
-    body: Record,
 }
 
 impl PartialEq for RecordSeq {
