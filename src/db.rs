@@ -82,14 +82,14 @@ impl Db {
         page.data[..page.len].to_vec()
     }
 
-    pub fn retrieve(&self, key: &[u8; 11]) -> Option<DbValue> {
+    pub fn retrieve(&self, key: &[u8]) -> Option<DbValue> {
         let head_ptr = self.wal.lock().current_head();
         let view = self.file.read();
         let ptr = btree::get(&view, head_ptr, key)?;
         Some(DbValue { ptr })
     }
 
-    pub fn insert(&self, key: &[u8; 11]) -> Result<DbValue, DbError> {
+    pub fn insert(&self, key: &[u8]) -> Result<DbValue, DbError> {
         let mut wal_lock = self.wal.lock();
 
         let new_head = wal_lock.alloc(&self.file)?;
@@ -101,6 +101,7 @@ impl Db {
             )
             .map(Some)
             .collect::<Vec<_>>();
+
         let old_head = wal_lock.current_head();
         let ptr = btree::insert(&self.file, old_head, &mut stem_ptr, key)?;
         for unused in stem_ptr {
