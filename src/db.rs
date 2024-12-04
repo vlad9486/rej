@@ -57,22 +57,21 @@ impl Db {
     }
 
     pub fn length(&self, value: &DbValue) -> usize {
-        let read_lock = self.file.read();
-        read_lock.page(value.ptr).len
+        self.file.read().page(value.ptr).len
     }
 
     /// # Panics
     /// if offset plus buf length is smaller than the value size
     pub fn read(&self, value: &DbValue, offset: usize, buf: &mut [u8]) {
-        let read_lock = self.file.read();
-        let page = read_lock.page(value.ptr);
+        let view = self.file.read();
+        let page = view.page(value.ptr);
         let data = &page.data[..page.len][offset..][..buf.len()];
         buf.clone_from_slice(data);
     }
 
     pub fn read_to_vec(&self, value: &DbValue) -> Vec<u8> {
-        let read_lock = self.file.read();
-        let page = read_lock.page(value.ptr);
+        let view = self.file.read();
+        let page = view.page(value.ptr);
         page.data[..page.len].to_vec()
     }
 
