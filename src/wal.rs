@@ -6,7 +6,7 @@ use thiserror::Error;
 use super::{
     file::{FileIo, PlainData},
     page::{PagePtr, RawPtr, PAGE_SIZE},
-    btree::{NodePage, Alloc, Free},
+    node::{Alloc, Free, NodePage},
 };
 
 #[derive(Debug, Error)]
