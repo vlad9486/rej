@@ -7,6 +7,7 @@ mod utils;
 mod file;
 mod page;
 mod wal;
+mod node;
 mod btree;
 mod value;
 mod db;

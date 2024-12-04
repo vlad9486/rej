@@ -9,13 +9,11 @@ const M: usize = 0x200;
 
 pub fn get<T>(view: &PageView<'_>, mut ptr: PagePtr<NodePage>, key: &[u8]) -> Option<PagePtr<T>> {
     loop {
-        let page = view.page(ptr);
-        let idx = page.search(view, key).ok()?;
-        let child = page.child[idx];
-        if page.leaf {
-            return PagePtr::from_raw_number(child);
-        } else {
-            ptr = PagePtr::from_raw_number(child)?;
+        let node = view.page(ptr);
+        let idx = node.search(view, key).ok()?;
+        match node.get_child(idx)? {
+            Child::Node(p) => ptr = p,
+            Child::Leaf(p) => return Some(p),
         }
     }
 }
@@ -69,15 +67,16 @@ pub fn insert<T>(
         node.insert(file, fl_old, idx, key)?;
     }
 
-    node.leaf = true;
-    if node.child[idx] == 0 {
+    let child = node.get_child_or_insert_with(idx, || {
         log::debug!("use metadata page");
-        node.child[idx] = fl_old.alloc::<T>().raw_number();
-    }
-    let ptr = unsafe { PagePtr::from_raw_number(node.child[idx]).unwrap_unchecked() };
+        fl_old.alloc()
+    });
     file.write(new_ptr, &node)?;
 
-    Ok((new_ptr, ptr))
+    match child {
+        Child::Node(_) => unimplemented!(),
+        Child::Leaf(ptr) => Ok((new_ptr, ptr)),
+    }
 }
 
 // TODO: remove value
@@ -95,19 +94,43 @@ pub fn remove<T>(
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NodePage {
-    child: [u32; M],
+    child: [Option<PagePtr<Self>>; M],
     keys_len: [u16; M],
     // maximal key size is `0x40 * 0x10 = 1024` bytes
     deep: [[Option<PagePtr<KeyPage>>; 2]; 0x40],
-    next: Option<PagePtr<NodePage>>,
-    prev: Option<PagePtr<NodePage>>,
-    leaf: bool,
+    next: Option<PagePtr<Self>>,
+    prev: Option<PagePtr<Self>>,
+    stem: bool,
     len: usize,
+}
+
+enum Child<T> {
+    Node(PagePtr<NodePage>),
+    Leaf(PagePtr<T>),
 }
 
 unsafe impl PlainData for NodePage {}
 
 impl NodePage {
+    fn get_child<T>(&self, idx: usize) -> Option<Child<T>> {
+        let ptr = self.child[idx];
+        match self.stem {
+            true => ptr.map(Child::Node),
+            false => ptr.map(PagePtr::cast).map(Child::Leaf),
+        }
+    }
+
+    fn get_child_or_insert_with<T, F>(&mut self, idx: usize, f: F) -> Child<T>
+    where
+        F: FnOnce() -> PagePtr<Self>,
+    {
+        let ptr = *self.child[idx].get_or_insert_with(f);
+        match self.stem {
+            true => Child::Node(ptr),
+            false => Child::Leaf(ptr.cast()),
+        }
+    }
+
     // TODO: SIMD optimization
     fn search(&self, view: &PageView<'_>, mut key: &[u8]) -> Result<usize, usize> {
         let mut buffer = [[0; 0x10]; M];
@@ -168,7 +191,7 @@ impl NodePage {
         for i in (idx..old).rev() {
             self.child[i + 1] = self.child[i];
         }
-        self.child[idx] = 0;
+        self.child[idx] = None;
 
         if self.len <= M / 2 {
             self.insert_half::<0>(file, fl_old, old, idx, key)?;
