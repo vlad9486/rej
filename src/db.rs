@@ -82,6 +82,17 @@ impl Db {
         Some(DbValue { ptr })
     }
 
+    pub fn iterator(&self, key: Option<&[u8]>, forward: bool) -> DbIterator {
+        let head_ptr = self.wal.lock().current_head();
+        let view = self.file.read();
+        DbIterator(btree::It::new(&view, head_ptr, forward, key))
+    }
+
+    pub fn next(&self, it: &mut DbIterator) -> Option<(Vec<u8>, DbValue)> {
+        it.0.next(&self.file.read())
+            .map(|(key, ptr)| (key, DbValue { ptr }))
+    }
+
     pub fn insert(&self, key: &[u8]) -> Result<DbValue, DbError> {
         let mut wal_lock = self.wal.lock();
 
@@ -116,3 +127,5 @@ impl Db {
         DbStats { total, free, seq }
     }
 }
+
+pub struct DbIterator(btree::It);

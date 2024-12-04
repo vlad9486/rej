@@ -22,8 +22,8 @@ pub struct NodePage {
     keys_len: [u16; M],
     // maximal key size is `0x40 * 0x10 = 1024` bytes
     deep: [[Option<PagePtr<KeyPage>>; 2]; 0x40],
-    next: Option<PagePtr<Self>>,
-    prev: Option<PagePtr<Self>>,
+    pub next: Option<PagePtr<Self>>,
+    pub prev: Option<PagePtr<Self>>,
     stem: bool,
     len: usize,
 }
@@ -36,6 +36,33 @@ pub enum Child<T> {
 unsafe impl PlainData for NodePage {}
 
 impl NodePage {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get_key(&self, view: &PageView<'_>, idx: usize) -> Vec<u8> {
+        let len = self.keys_len[idx];
+        let depth = ((len + 0x10 - 1) / 0x10) as usize;
+        let mut v = Vec::with_capacity(0x400);
+        for i in &self.deep[..depth] {
+            if idx < M / 2 {
+                let ptr = i[0].expect("BUG key length inconsistent with key pages");
+                let page = view.page(ptr);
+                v.extend_from_slice(&page.keys[idx]);
+            } else {
+                let idx = idx - M / 2;
+                let ptr = i[1].expect("BUG key length inconsistent with key pages");
+                let page = view.page(ptr);
+                v.extend_from_slice(&page.keys[idx]);
+            }
+        }
+        v
+    }
+
     pub fn get_child<T>(&self, idx: usize) -> Option<Child<T>> {
         let ptr = self.child[idx];
         match self.stem {
@@ -135,8 +162,10 @@ impl NodePage {
 
         for i in (idx..old).rev() {
             self.child[i + 1] = self.child[i];
+            self.keys_len[i + 1] = self.keys_len[i];
         }
         self.child[idx] = None;
+        self.keys_len[idx] = key.len() as u16;
 
         if self.len <= M / 2 {
             self.insert_half::<0>(file, fl_old, old, idx, key)?;

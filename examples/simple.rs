@@ -31,4 +31,13 @@ fn main() {
 
     let v = db.retrieve(b"some key 6, too                long").unwrap();
     assert_eq!(db.read_to_vec(&v), data(60));
+
+    let mut it = db.iterator(None, true);
+    while let Some((k, _)) = db.next(&mut it) {
+        log::info!("{}", std::str::from_utf8(&k).unwrap());
+    }
+    let mut it = db.iterator(None, false);
+    while let Some((k, _)) = db.next(&mut it) {
+        log::info!("{}", std::str::from_utf8(&k).unwrap());
+    }
 }
