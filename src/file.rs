@@ -105,13 +105,14 @@ impl FileIo {
         self.file.sync_all()
     }
 
-    pub fn grow<T>(&self) -> io::Result<Option<PagePtr<T>>> {
+    pub fn grow<T>(&self, n: u64) -> io::Result<Option<PagePtr<T>>> {
         let mut lock = self.mapped.write();
 
         let old_len = self.file_len.load(Ordering::SeqCst);
 
-        self.file.set_len(old_len + PAGE_SIZE)?;
-        self.file_len.store(old_len + PAGE_SIZE, Ordering::SeqCst);
+        self.file.set_len(old_len + n * PAGE_SIZE)?;
+        self.file_len
+            .store(old_len + n * PAGE_SIZE, Ordering::SeqCst);
         *lock = utils::mmap(&self.file, self.mmap_populate)?;
 
         Ok(PagePtr::from_raw_offset(old_len))

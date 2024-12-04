@@ -2,7 +2,8 @@ use std::{io, mem};
 
 use super::{
     file::{PlainData, FileIo, PageView},
-    page::{PagePtr, RawPtr, PAGE_SIZE},
+    page::{PagePtr, PAGE_SIZE, RawPtr},
+    wal::FreelistCache,
 };
 
 const M: usize = 0x200;
@@ -24,93 +25,56 @@ pub fn get(
     }
 }
 
-struct Allocator<'a> {
-    freelist: &'a mut [Option<PagePtr<NodePage>>],
-    temporal: Vec<PagePtr<NodePage>>,
-    take_pos: usize,
-    put_pos: usize,
-}
-
-impl<'a> Allocator<'a> {
-    fn new(freelist: &'a mut [Option<PagePtr<NodePage>>]) -> Self {
-        Allocator {
-            freelist,
-            temporal: Vec::new(),
-            take_pos: 0,
-            put_pos: 0,
-        }
-    }
-
-    fn alloc(&mut self) -> PagePtr<NodePage> {
-        let pos = self
-            .freelist
-            .get_mut(self.take_pos)
-            .expect("`stem_ptr` must be big enough");
-        self.take_pos += 1;
-        let res = pos.take().expect("cannot fail");
-        if let Some(ptr) = self.temporal.pop() {
-            self.free(ptr);
-        }
-        res
-    }
-
-    fn free(&mut self, ptr: PagePtr<NodePage>) {
-        if self.take_pos > self.put_pos {
-            let pos = self
-                .freelist
-                .get_mut(self.put_pos)
-                .expect("`stem_ptr` must be big enough");
-            self.put_pos += 1;
-            let None = pos.replace(ptr) else {
-                panic!("must not happen");
-            };
-        } else {
-            self.temporal.push(ptr);
-        }
-    }
-}
-
 pub fn insert(
     file: &FileIo,
     old_head: PagePtr<NodePage>,
-    freelist: &mut [Option<PagePtr<NodePage>>],
+    fl_old: &mut FreelistCache,
+    fl_new: &mut FreelistCache,
     key: &[u8],
-) -> io::Result<PagePtr<DataPage>> {
-    let mut allocator = Allocator::new(freelist);
-
+) -> io::Result<(PagePtr<NodePage>, PagePtr<DataPage>)> {
     let view_lock = file.read();
 
     let old_ptr = old_head;
 
+    let mut alloc = || fl_old.next().expect("must be big enough");
+    let mut free = |ptr| {
+        if fl_new.put(ptr).is_some() {
+            panic!("must have enough space");
+        }
+    };
+
     // TODO: loop, balance
-    let new_ptr = allocator.alloc();
+    let new_ptr = alloc().cast();
     let mut node = *view_lock.page(old_ptr);
-    allocator.free(old_ptr);
+    free(old_ptr.cast());
     for [left, right] in &mut node.deep {
         if let Some(ptr) = left {
             let page = *view_lock.page(*ptr);
-            allocator.free(ptr.cast());
-            let new_ptr = allocator.alloc().cast();
+            free(ptr.cast());
+            let new_ptr = alloc().cast();
             file.write(new_ptr, &page)?;
             *ptr = new_ptr;
         }
         if let Some(ptr) = right {
             let page = *view_lock.page(*ptr);
-            allocator.free(ptr.cast());
-            let new_ptr = allocator.alloc().cast();
+            free(ptr.cast());
+            let new_ptr = alloc().cast();
             file.write(new_ptr, &page)?;
             *ptr = new_ptr;
         }
     }
     let idx = node.search(&view_lock, key).unwrap_or_else(|idx| {
-        node.insert(file, &mut allocator, idx, key).unwrap();
+        node.insert(file, || alloc().cast(), idx, key).unwrap();
         idx
     });
     node.leaf = true;
-    let ptr = *unsafe { &mut node.child[idx].leaf }.get_or_insert_with(|| allocator.alloc().cast());
+    let ptr = *unsafe { &mut node.child[idx].leaf }.get_or_insert_with(|| {
+        log::debug!("use metadata page");
+        alloc().cast()
+    });
     file.write(new_ptr, &node)?;
 
-    Ok(ptr)
+    Ok((new_ptr, ptr))
 }
 
 #[repr(C)]
@@ -129,6 +93,7 @@ pub struct NodePage {
 unsafe impl PlainData for NodePage {}
 
 impl NodePage {
+    // TODO: SIMD optimization
     fn search(&self, view: &PageView<'_>, mut key: &[u8]) -> Result<usize, usize> {
         let mut buffer = [[0; 0x10]; M];
         let mut range = 0..self.len;
@@ -178,7 +143,7 @@ impl NodePage {
     fn insert(
         &mut self,
         file: &FileIo,
-        allocator: &mut Allocator<'_>,
+        mut alloc: impl FnMut() -> PagePtr<KeyPage>,
         idx: usize,
         key: &[u8],
     ) -> io::Result<()> {
@@ -191,12 +156,12 @@ impl NodePage {
         self.child[idx] = Child { leaf: None };
 
         if self.len <= M / 2 {
-            self.insert_half(file, allocator, old, idx, 0, key)?;
+            self.insert_half(file, &mut alloc, old, idx, 0, key)?;
         } else if idx >= M / 2 {
-            self.insert_half(file, allocator, old - M / 2, idx - M / 2, 1, key)?;
+            self.insert_half(file, &mut alloc, old - M / 2, idx - M / 2, 1, key)?;
         } else {
-            let carry = self.insert_half(file, allocator, M / 2, idx, 0, key)?;
-            self.insert_half(file, allocator, old - M / 2, 0, 1, &carry)?;
+            let carry = self.insert_half(file, &mut alloc, M / 2, idx, 0, key)?;
+            self.insert_half(file, &mut alloc, old - M / 2, 0, 1, &carry)?;
         }
 
         Ok(())
@@ -205,7 +170,7 @@ impl NodePage {
     fn insert_half(
         &mut self,
         file: &FileIo,
-        allocator: &mut Allocator<'_>,
+        mut alloc: impl FnMut() -> PagePtr<KeyPage>,
         end: usize,
         idx: usize,
         half: usize,
@@ -214,16 +179,17 @@ impl NodePage {
         let mut carry = vec![];
         let mut it = key.chunks(0x10);
         let mut depth = 0;
-        let mut fin = false;
         let view = file.read();
         loop {
             let was_absent = self.deep[depth][half].is_none();
-            if was_absent && fin {
+            let chunk = it.next();
+            if was_absent && chunk.is_none() {
                 break;
             }
-            let ptr = *self.deep[depth][half].get_or_insert_with(|| allocator.alloc().cast());
+            let ptr = *self.deep[depth][half].get_or_insert_with(&mut alloc);
             let mut page = *view.page(ptr);
             if was_absent {
+                log::debug!("use key page");
                 page.keys = [[0; 0x10]; M / 2];
             }
             for i in (idx..end).rev() {
@@ -234,10 +200,8 @@ impl NodePage {
                 }
             }
             page.keys[idx] = [0; 0x10];
-            if let Some(chunk) = it.next() {
+            if let Some(chunk) = chunk {
                 page.keys[idx][..chunk.len()].clone_from_slice(&chunk);
-            } else {
-                fin = true;
             }
             file.write(ptr, &page)?;
 

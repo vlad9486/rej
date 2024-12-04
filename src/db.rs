@@ -1,11 +1,11 @@
-use std::{io, iter, path::Path};
+use std::{io, path::Path};
 
 use thiserror::Error;
 
 use super::{
     file::{FileIo, IoOptions},
-    page::{PagePtr, RawPtr},
-    wal::{Wal, WalError, WAL_SIZE},
+    page::PagePtr,
+    wal::{Wal, WalError, WAL_SIZE, FreelistCache},
     btree::{self, DataPage},
 };
 
@@ -92,24 +92,19 @@ impl Db {
     pub fn insert(&self, key: &[u8]) -> Result<DbValue, DbError> {
         let mut wal_lock = self.wal.lock();
 
-        let new_head = wal_lock.alloc(&self.file)?;
-        let mut stem_ptr = iter::once(new_head.cast())
-            .chain(
-                iter::repeat_with(|| wal_lock.alloc(&self.file))
-                    .filter_map(Result::ok)
-                    .take(5),
-            )
-            .map(Some)
-            .collect::<Vec<_>>();
-
         let old_head = wal_lock.current_head();
-        let ptr = btree::insert(&self.file, old_head, &mut stem_ptr, key)?;
-        for unused in stem_ptr {
-            if let Some(unused) = unused {
-                wal_lock.free(&self.file, unused)?;
+        let mut fl_old = wal_lock.freelist_cache();
+        while !fl_old.is_full() {
+            fl_old.put(wal_lock.alloc(&self.file)?);
+        }
+        let mut fl_new = FreelistCache::empty();
+        let (new_head, ptr) = btree::insert(&self.file, old_head, &mut fl_old, &mut fl_new, key)?;
+        for ptr in &mut fl_old {
+            if let Some(ptr) = fl_new.put(ptr) {
+                wal_lock.free(&self.file, ptr)?;
             }
         }
-        wal_lock.new_head(&self.file, new_head)?;
+        wal_lock.new_head(&self.file, new_head, fl_new)?;
 
         Ok(DbValue { ptr })
     }
@@ -121,10 +116,10 @@ impl Db {
     }
 
     pub fn stats(&self) -> DbStats {
-        let total = self.file.pages() - WAL_SIZE;
+        let total = self.file.pages() - WAL_SIZE - FreelistCache::SIZE;
 
         let wal_lock = self.wal.lock();
-        let free = wal_lock.free_list_size(&self.file);
+        let free = wal_lock.freelist_size(&self.file);
         let seq = wal_lock.seq();
 
         DbStats { total, free, seq }

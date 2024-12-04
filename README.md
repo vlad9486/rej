@@ -10,19 +10,12 @@ Partially guaranteed ACID.
 
 ## TODO:
 
-### Difficult
-
-* Extent allocation.
-* Proper write-ahead log unroll.
-* Better parallelism.
-
-### Moderate
-
 * B-Tree algorithms.
 * Full encryption (Adiantum).
-* Unlimited value.
+* More tests.
 
-### Easy
+### Difficult
 
-* Cache of free pages in WAL entry.
-* Tests for ACID.
+* Extent allocation -> Unlimited value;
+* Tests for ACID -> Proper write-ahead log unroll;
+* Better parallelism.
