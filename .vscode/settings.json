@@ -7,5 +7,6 @@
         "mmap",
         "repr",
         "thiserror",
+        "adiantum",
     ]
 }

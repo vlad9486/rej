@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, io, mem, num::NonZeroU64};
+use std::{io, mem};
 
 use parking_lot::{Mutex, MutexGuard};
 use thiserror::Error;
@@ -23,7 +23,7 @@ pub struct Wal(Mutex<RecordSeq>);
 
 impl Wal {
     pub fn new(create: bool, file: &FileIo) -> Result<Self, WalError> {
-        let inner = if create {
+        if create {
             let head = PagePtr::from_raw_number(WAL_SIZE)
                 .ok_or(io::Error::from(io::ErrorKind::UnexpectedEof))?;
             for pos in 0..WAL_SIZE {
@@ -51,7 +51,9 @@ impl Wal {
 
             file.sync()?;
 
-            Mutex::new(RecordSeq {
+            log::info!("did initialize empty database");
+
+            Ok(Self(Mutex::new(RecordSeq {
                 seq: (WAL_SIZE - 1).into(),
                 freelist_cache: FreelistCache {
                     pos: FreelistCache::SIZE,
@@ -59,22 +61,37 @@ impl Wal {
                 },
                 freelist: None,
                 head,
-            })
+            })))
         } else {
             let view = file.read();
 
-            let inner = *(0..WAL_SIZE)
+            let it = (0..WAL_SIZE)
                 .map(PagePtr::from_raw_number)
                 .map(|ptr| view.page::<RecordPage>(ptr))
                 .filter_map(RecordPage::check)
-                .map(|(inner, _)| inner)
-                .max()
+                .map(|(inner, _)| inner);
+
+            let mut inner = None::<&RecordSeq>;
+            for item in it {
+                if inner.map_or(0, |i| i.seq) > item.seq {
+                    break;
+                } else {
+                    inner = Some(item);
+                }
+            }
+
+            let wal = inner
+                .copied()
+                .map(Mutex::new)
+                .map(Self)
                 .ok_or(WalError::BadWal)?;
 
-            Mutex::new(inner)
-        };
+            log::info!("did open database, will unroll log");
+            wal.lock().unroll(file)?;
+            log::info!("did unroll log");
 
-        Ok(Wal(inner))
+            Ok(wal)
+        }
     }
 
     pub fn lock(&self) -> WalLock<'_> {
@@ -230,22 +247,14 @@ impl WalLock<'_> {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RecordPage {
-    checksum: Option<NonZeroU64>,
+    checksum: u64,
     inner: RecordSeq,
     body: Record,
 }
 
 impl RecordPage {
-    fn checksum<T>(value: &T) -> NonZeroU64
-    where
-        T: PlainData,
-    {
-        let checksum = crc64::crc64(0, value.as_bytes()).saturating_add(1);
-        unsafe { NonZeroU64::new_unchecked(checksum) }
-    }
-
     fn new(inner: RecordSeq, body: Record) -> Self {
-        let checksum = Some(Self::checksum(&inner));
+        let checksum = crc64::crc64(0, inner.as_bytes());
         RecordPage {
             checksum,
             inner,
@@ -254,8 +263,9 @@ impl RecordPage {
     }
 
     fn check(&self) -> Option<(&RecordSeq, &Record)> {
-        // return None if no checksum or checksum is wrong
-        (self.checksum? == Self::checksum(&self.inner)).then_some((&self.inner, &self.body))
+        // return None if checksum is wrong
+        (self.checksum == crc64::crc64(0, self.inner.as_bytes()))
+            .then_some((&self.inner, &self.body))
     }
 }
 
@@ -266,26 +276,6 @@ struct RecordSeq {
     freelist_cache: FreelistCache,
     freelist: Option<PagePtr<FreePage>>,
     head: PagePtr<NodePage>,
-}
-
-impl PartialEq for RecordSeq {
-    fn eq(&self, other: &Self) -> bool {
-        self.seq.eq(&other.seq)
-    }
-}
-
-impl Eq for RecordSeq {}
-
-impl PartialOrd for RecordSeq {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for RecordSeq {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.seq.cmp(&other.seq)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -312,11 +302,19 @@ impl FreelistCache {
         Self::SIZE - self.pos
     }
 
-    pub fn put(&mut self, page: PagePtr<FreePage>) -> Option<PagePtr<FreePage>> {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn len(&self) -> u32 {
+        self.pos
+    }
+
+    pub fn put(&mut self, ptr: PagePtr<FreePage>) -> Option<PagePtr<FreePage>> {
         if self.is_full() {
-            return Some(page);
+            return Some(ptr);
         }
-        self.pages[self.pos as usize] = Some(page.cast());
+        self.pages[self.pos as usize] = Some(ptr.cast());
         self.pos += 1;
 
         None
@@ -327,7 +325,7 @@ impl Iterator for FreelistCache {
     type Item = PagePtr<FreePage>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.pos == 0 {
+        if self.is_empty() {
             None
         } else {
             self.pos -= 1;

@@ -201,7 +201,7 @@ impl NodePage {
             }
             page.keys[idx] = [0; 0x10];
             if let Some(chunk) = chunk {
-                page.keys[idx][..chunk.len()].clone_from_slice(&chunk);
+                page.keys[idx][..chunk.len()].clone_from_slice(chunk);
             }
             file.write(ptr, &page)?;
 

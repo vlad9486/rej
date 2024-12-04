@@ -39,13 +39,6 @@ impl Db {
         let create = !path.as_ref().exists();
         let file = FileIo::new(path, create, cfg)?;
         let wal = Wal::new(create, &file)?;
-        if create {
-            log::info!("did initialize empty database");
-        } else {
-            log::info!("did open database, will unroll log");
-            wal.lock().unroll(&file)?;
-            log::info!("did unroll log");
-        }
 
         Ok(Db { file, wal })
     }
@@ -110,7 +103,7 @@ impl Db {
     }
 
     // TODO: remove value
-    pub fn remove(&self, key: &[u8; 11]) -> Result<(), DbError> {
+    pub fn remove(&self, key: &[u8]) -> Result<(), DbError> {
         let _ = key;
         unimplemented!()
     }
