@@ -6,7 +6,8 @@ use super::{
     file::{FileIo, IoOptions},
     page::PagePtr,
     wal::{Wal, WalError, WAL_SIZE, FreelistCache},
-    btree::{self, DataPage},
+    btree,
+    value::DataPage,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -87,25 +88,23 @@ impl Db {
 
         let old_head = wal_lock.current_head();
         let mut fl_old = wal_lock.freelist_cache();
-        while !fl_old.is_full() {
-            fl_old.put(wal_lock.alloc(&self.file)?);
-        }
         let mut fl_new = FreelistCache::empty();
         let (new_head, ptr) = btree::insert(&self.file, old_head, &mut fl_old, &mut fl_new, key)?;
-        for ptr in &mut fl_old {
-            if let Some(ptr) = fl_new.put(ptr) {
-                wal_lock.free(&self.file, ptr)?;
-            }
-        }
-        wal_lock.new_head(&self.file, new_head, fl_new)?;
+        wal_lock.new_head(&self.file, new_head, fl_old, fl_new)?;
 
         Ok(DbValue { ptr })
     }
 
-    // TODO: remove value
-    pub fn remove(&self, key: &[u8]) -> Result<(), DbError> {
-        let _ = key;
-        unimplemented!()
+    pub fn remove(&self, key: &[u8]) -> Result<Option<DbValue>, DbError> {
+        let mut wal_lock = self.wal.lock();
+
+        let old_head = wal_lock.current_head();
+        let mut fl_old = wal_lock.freelist_cache();
+        let mut fl_new = FreelistCache::empty();
+        let (new_head, ptr) = btree::remove(&self.file, old_head, &mut fl_old, &mut fl_new, key)?;
+        wal_lock.new_head(&self.file, new_head, fl_old, fl_new)?;
+
+        Ok(ptr.map(|ptr| DbValue { ptr }))
     }
 
     pub fn stats(&self) -> DbStats {

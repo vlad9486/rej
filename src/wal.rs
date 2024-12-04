@@ -6,7 +6,7 @@ use thiserror::Error;
 use super::{
     file::{FileIo, PlainData},
     page::{PagePtr, RawPtr, PAGE_SIZE},
-    btree::NodePage,
+    btree::{NodePage, Alloc, Free},
 };
 
 #[derive(Debug, Error)]
@@ -129,7 +129,7 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    pub fn unroll(mut self, file: &FileIo) -> Result<(), WalError> {
+    fn unroll(mut self, file: &FileIo) -> Result<(), WalError> {
         let view = file.read();
 
         let mut reverse = self.0.seq;
@@ -170,7 +170,7 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    pub fn alloc<T>(&mut self, file: &FileIo) -> Result<PagePtr<T>, WalError> {
+    fn alloc<T>(&mut self, file: &FileIo) -> Result<PagePtr<T>, WalError> {
         let view = file.read();
 
         let (old_head, next) = if let Some(head) = view.page(self.ptr()).inner.freelist {
@@ -189,7 +189,7 @@ impl WalLock<'_> {
         Ok(old_head.cast())
     }
 
-    pub fn free<T>(&mut self, file: &FileIo, ptr: PagePtr<T>) -> Result<(), WalError> {
+    fn free<T>(&mut self, file: &FileIo, ptr: PagePtr<T>) -> Result<(), WalError> {
         let view = file.read();
         let old_head = view.page(self.ptr()).inner.freelist;
 
@@ -215,10 +215,27 @@ impl WalLock<'_> {
         mut self,
         file: &FileIo,
         head: PagePtr<NodePage>,
-        freelist_cache: FreelistCache,
+        mut old: FreelistCache,
+        mut new: FreelistCache,
     ) -> Result<(), WalError> {
+        let mut cnt = 0;
+        for ptr in &mut old {
+            if let Some(ptr) = new.put(ptr) {
+                self.free(file, ptr)?;
+                cnt += 1;
+            }
+        }
+        while !new.is_full() {
+            new.put(self.alloc(file)?);
+            cnt += 1;
+        }
+
+        if cnt >= WAL_SIZE - 1 {
+            panic!("BUG: should allocate/deallocate in batch");
+        }
+
         self.0.head = head;
-        self.0.freelist_cache = freelist_cache;
+        self.0.freelist_cache = new;
         self.write(file, Record::Done)
     }
 
@@ -284,6 +301,22 @@ pub struct FreelistCache {
     pages: [Option<PagePtr<FreePage>>; Self::SIZE as usize],
 }
 
+impl Alloc for FreelistCache {
+    fn alloc<T>(&mut self) -> PagePtr<T> {
+        self.next()
+            .expect("BUG: must be big enough, increase size of freelist cache")
+            .cast()
+    }
+}
+
+impl Free for FreelistCache {
+    fn free<T>(&mut self, ptr: PagePtr<T>) {
+        if self.put(ptr.cast()).is_some() {
+            panic!("BUG: must have enough space, increase size of freelist cache");
+        }
+    }
+}
+
 impl FreelistCache {
     pub const SIZE: u32 = 0x2b7;
 
@@ -314,7 +347,7 @@ impl FreelistCache {
         if self.is_full() {
             return Some(ptr);
         }
-        self.pages[self.pos as usize] = Some(ptr.cast());
+        self.pages[self.pos as usize] = Some(ptr);
         self.pos += 1;
 
         None
@@ -329,7 +362,7 @@ impl Iterator for FreelistCache {
             None
         } else {
             self.pos -= 1;
-            self.pages[self.pos as usize].map(PagePtr::cast)
+            self.pages[self.pos as usize]
         }
     }
 }
@@ -366,7 +399,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::{
-        RawPtr, Wal,
+        RawPtr, Wal, FreelistCache, WAL_SIZE,
         super::file::{FileIo, IoOptions},
     };
 
@@ -382,13 +415,13 @@ mod tests {
         let file = FileIo::new(&path, true, cfg).unwrap();
         let wal = Wal::new(true, &file).unwrap();
         let ptr = wal.lock().alloc::<()>(&file).unwrap();
-        assert_eq!(ptr.raw_number(), 0x101);
+        assert_eq!(ptr.raw_number(), 1 + WAL_SIZE + FreelistCache::SIZE);
         wal.lock().free(&file, ptr).unwrap();
         drop(wal);
 
         let wal = Wal::new(false, &file).unwrap();
         let ptr = wal.lock().alloc::<()>(&file).unwrap();
-        assert_eq!(ptr.raw_number(), 0x101);
+        assert_eq!(ptr.raw_number(), 1 + WAL_SIZE + FreelistCache::SIZE);
         drop(wal);
 
         fs::copy(path, "target/db").unwrap();

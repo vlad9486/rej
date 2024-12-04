@@ -1,86 +1,101 @@
-use std::{io, mem};
+use std::io;
 
 use super::{
     file::{PlainData, FileIo, PageView},
-    page::{PagePtr, PAGE_SIZE, RawPtr},
-    wal::FreelistCache,
+    page::{PagePtr, RawPtr},
 };
 
 const M: usize = 0x200;
 
-pub fn get(
-    view: &PageView<'_>,
-    mut ptr: PagePtr<NodePage>,
-    key: &[u8],
-) -> Option<PagePtr<DataPage>> {
+pub fn get<T>(view: &PageView<'_>, mut ptr: PagePtr<NodePage>, key: &[u8]) -> Option<PagePtr<T>> {
     loop {
         let page = view.page(ptr);
         let idx = page.search(view, key).ok()?;
         let child = page.child[idx];
         if page.leaf {
-            return unsafe { child.leaf };
+            return PagePtr::from_raw_number(child);
         } else {
-            ptr = unsafe { child.node? };
+            ptr = PagePtr::from_raw_number(child)?;
         }
     }
 }
 
-pub fn insert(
+pub trait Alloc {
+    fn alloc<T>(&mut self) -> PagePtr<T>;
+}
+
+pub trait Free {
+    fn free<T>(&mut self, ptr: PagePtr<T>);
+}
+
+pub fn insert<T>(
     file: &FileIo,
     old_head: PagePtr<NodePage>,
-    fl_old: &mut FreelistCache,
-    fl_new: &mut FreelistCache,
+    fl_old: &mut impl Alloc,
+    fl_new: &mut impl Free,
     key: &[u8],
-) -> io::Result<(PagePtr<NodePage>, PagePtr<DataPage>)> {
+) -> io::Result<(PagePtr<NodePage>, PagePtr<T>)> {
     let view_lock = file.read();
 
     let old_ptr = old_head;
 
-    let mut alloc = || fl_old.next().expect("must be big enough");
-    let mut free = |ptr| {
-        if fl_new.put(ptr).is_some() {
-            panic!("must have enough space");
-        }
-    };
-
     // TODO: loop, balance
-    let new_ptr = alloc().cast();
+    let new_ptr = fl_old.alloc();
     let mut node = *view_lock.page(old_ptr);
-    free(old_ptr.cast());
-    for [left, right] in &mut node.deep {
-        if let Some(ptr) = left {
-            let page = *view_lock.page(*ptr);
-            free(ptr.cast());
-            let new_ptr = alloc().cast();
-            file.write(new_ptr, &page)?;
-            *ptr = new_ptr;
+    fl_new.free(old_ptr);
+    let (idx, exact) = match node.search(&view_lock, key) {
+        Ok(idx) => (idx, true),
+        Err(idx) => (idx, false),
+    };
+    if !exact {
+        let mut realloc_half = |half| {
+            for couple in &mut node.deep {
+                if let Some::<PagePtr<KeyPage>>(ptr) = &mut couple[half] {
+                    fl_new.free(*ptr);
+                    let page = *view_lock.page(*ptr);
+                    let new_ptr = fl_old.alloc();
+                    file.write(new_ptr, &page)?;
+                    *ptr = new_ptr;
+                }
+            }
+
+            Ok::<_, io::Error>(())
+        };
+        realloc_half(0)?;
+        if idx >= M / 2 {
+            realloc_half(1)?;
         }
-        if let Some(ptr) = right {
-            let page = *view_lock.page(*ptr);
-            free(ptr.cast());
-            let new_ptr = alloc().cast();
-            file.write(new_ptr, &page)?;
-            *ptr = new_ptr;
-        }
+
+        node.insert(file, fl_old, idx, key)?;
     }
-    let idx = node.search(&view_lock, key).unwrap_or_else(|idx| {
-        node.insert(file, || alloc().cast(), idx, key).unwrap();
-        idx
-    });
+
     node.leaf = true;
-    let ptr = *unsafe { &mut node.child[idx].leaf }.get_or_insert_with(|| {
+    if node.child[idx] == 0 {
         log::debug!("use metadata page");
-        alloc().cast()
-    });
+        node.child[idx] = fl_old.alloc::<T>().raw_number();
+    }
+    let ptr = unsafe { PagePtr::from_raw_number(node.child[idx]).unwrap_unchecked() };
     file.write(new_ptr, &node)?;
 
     Ok((new_ptr, ptr))
 }
 
+// TODO: remove value
+pub fn remove<T>(
+    file: &FileIo,
+    old_head: PagePtr<NodePage>,
+    fl_old: &mut impl Alloc,
+    fl_new: &mut impl Free,
+    key: &[u8],
+) -> io::Result<(PagePtr<NodePage>, Option<PagePtr<T>>)> {
+    let _ = (file, old_head, fl_old, fl_new, key);
+    unimplemented!()
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NodePage {
-    child: [Child; M],
+    child: [u32; M],
     keys_len: [u16; M],
     // maximal key size is `0x40 * 0x10 = 1024` bytes
     deep: [[Option<PagePtr<KeyPage>>; 2]; 0x40],
@@ -143,7 +158,7 @@ impl NodePage {
     fn insert(
         &mut self,
         file: &FileIo,
-        mut alloc: impl FnMut() -> PagePtr<KeyPage>,
+        fl_old: &mut impl Alloc,
         idx: usize,
         key: &[u8],
     ) -> io::Result<()> {
@@ -153,27 +168,26 @@ impl NodePage {
         for i in (idx..old).rev() {
             self.child[i + 1] = self.child[i];
         }
-        self.child[idx] = Child { leaf: None };
+        self.child[idx] = 0;
 
         if self.len <= M / 2 {
-            self.insert_half(file, &mut alloc, old, idx, 0, key)?;
+            self.insert_half::<0>(file, fl_old, old, idx, key)?;
         } else if idx >= M / 2 {
-            self.insert_half(file, &mut alloc, old - M / 2, idx - M / 2, 1, key)?;
+            self.insert_half::<1>(file, fl_old, old - M / 2, idx - M / 2, key)?;
         } else {
-            let carry = self.insert_half(file, &mut alloc, M / 2, idx, 0, key)?;
-            self.insert_half(file, &mut alloc, old - M / 2, 0, 1, &carry)?;
+            let carry = self.insert_half::<0>(file, fl_old, M / 2, idx, key)?;
+            self.insert_half::<1>(file, fl_old, old - M / 2, 0, &carry)?;
         }
 
         Ok(())
     }
 
-    fn insert_half(
+    fn insert_half<const HALF: usize>(
         &mut self,
         file: &FileIo,
-        mut alloc: impl FnMut() -> PagePtr<KeyPage>,
+        fl_old: &mut impl Alloc,
         end: usize,
         idx: usize,
-        half: usize,
         key: &[u8],
     ) -> io::Result<Vec<u8>> {
         let mut carry = vec![];
@@ -181,12 +195,12 @@ impl NodePage {
         let mut depth = 0;
         let view = file.read();
         loop {
-            let was_absent = self.deep[depth][half].is_none();
+            let was_absent = self.deep[depth][HALF].is_none();
             let chunk = it.next();
             if was_absent && chunk.is_none() {
                 break;
             }
-            let ptr = *self.deep[depth][half].get_or_insert_with(&mut alloc);
+            let ptr = *self.deep[depth][HALF].get_or_insert_with(|| fl_old.alloc());
             let mut page = *view.page(ptr);
             if was_absent {
                 log::debug!("use key page");
@@ -218,23 +232,3 @@ struct KeyPage {
 }
 
 unsafe impl PlainData for KeyPage {}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-union Child {
-    node: Option<PagePtr<NodePage>>,
-    leaf: Option<PagePtr<DataPage>>,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct DataPage {
-    pub len: usize,
-    pub data: [u8; Self::CAPACITY],
-}
-
-impl DataPage {
-    pub const CAPACITY: usize = PAGE_SIZE as usize - mem::size_of::<usize>();
-}
-
-unsafe impl PlainData for DataPage {}

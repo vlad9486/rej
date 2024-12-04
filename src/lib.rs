@@ -3,16 +3,13 @@
 //! Maximal key size: (2 ^ 10) B = 1 kiB
 //! Maximal number of records: 2 ^ 30
 
-mod page;
-
-mod file;
-
-mod wal;
-mod db;
-
-mod btree;
-
 mod utils;
+mod file;
+mod page;
+mod wal;
+mod btree;
+mod value;
+mod db;
 
 pub use self::{
     file::IoOptions,
