@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData, num::NonZeroU32};
+use std::{fmt, marker::PhantomData, num::NonZeroU32, cmp::Ordering};
 
 pub const PAGE_SIZE: u64 = 0x1000;
 
@@ -54,13 +54,13 @@ impl<T> PartialEq for PagePtr<T> {
 impl<T> Eq for PagePtr<T> {}
 
 impl<T> PartialOrd for PagePtr<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl<T> Ord for PagePtr<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.0.cmp(&other.0)
     }
 }

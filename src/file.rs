@@ -53,6 +53,7 @@ pub struct FileIo {
     mmap_populate: bool,
     file: fs::File,
     file_len: AtomicU32,
+    write_counter: AtomicU32,
     mapped: RwLock<Mmap>,
 }
 
@@ -68,6 +69,7 @@ impl FileIo {
             mmap_populate: cfg.mmap_populate,
             file,
             file_len,
+            write_counter: AtomicU32::new(0),
             mapped,
         })
     }
@@ -91,6 +93,7 @@ impl FileIo {
             .as_bytes()
             .get(range)
             .expect("`range` must be in the range");
+        self.write_counter.fetch_add(1, Ordering::SeqCst);
         utils::write_at(&self.file, slice, offset)
     }
 
@@ -99,6 +102,7 @@ impl FileIo {
         T: PlainData,
     {
         let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64) * PAGE_SIZE;
+        self.write_counter.fetch_add(1, Ordering::SeqCst);
         utils::write_at(&self.file, page.as_bytes(), offset)
     }
 
@@ -129,5 +133,9 @@ impl FileIo {
 
     pub fn pages(&self) -> u32 {
         self.file_len.load(Ordering::SeqCst)
+    }
+
+    pub fn writes(&self) -> u32 {
+        self.write_counter.load(Ordering::SeqCst)
     }
 }

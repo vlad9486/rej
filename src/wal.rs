@@ -26,6 +26,7 @@ pub struct DbStats {
     pub free: u32,
     pub used: u32,
     pub seq: u64,
+    pub writes: u32,
 }
 
 pub struct Wal(Mutex<RecordSeq>);
@@ -123,6 +124,7 @@ impl WalLock<'_> {
             free,
             used,
             seq,
+            writes: file.writes(),
         }
     }
 

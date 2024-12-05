@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, str};
 
 use rej::Db;
 
@@ -34,10 +34,10 @@ fn main() {
 
     let mut it = db.iterator(None, true);
     while let Some((k, _)) = db.next(&mut it) {
-        log::info!("{}", std::str::from_utf8(&k).unwrap());
+        log::info!("{}", str::from_utf8(&k).unwrap());
     }
     let mut it = db.iterator(None, false);
     while let Some((k, _)) = db.next(&mut it) {
-        log::info!("{}", std::str::from_utf8(&k).unwrap());
+        log::info!("{}", str::from_utf8(&k).unwrap());
     }
 }

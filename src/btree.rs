@@ -45,10 +45,10 @@ impl ItInner {
         }
 
         loop {
-            let idx = key.map_or((1 - usize::from(forward)) * (node.len() - 1), |key| {
-                node.search(view, table_id, key)
-                    .unwrap_or_else(|idx| idx + usize::from(forward))
-            });
+            // TODO: careful arithmetics
+            let idx = key.map_or(usize::from(!forward) * node.len(), |key| {
+                node.search(view, table_id, key).unwrap_or_else(|idx| idx)
+            }) - usize::from(!forward);
             match node.get_child::<()>(idx)? {
                 Child::Node(p) => ptr = p,
                 Child::Leaf(_) => {

@@ -92,7 +92,7 @@ impl NodePage {
         let mut depth = 0;
 
         let i = self.table_id[..self.len].binary_search(&table_id)?;
-        let mut range: std::ops::Range<usize> = i..(i + 1);
+        let mut range = i..(i + 1);
 
         while range.start > 0 && self.table_id[range.start - 1] == table_id {
             range.start -= 1;
@@ -160,6 +160,9 @@ impl NodePage {
         }
 
         let old = self.len;
+        if old == M {
+            panic!("BUG: handle overflow");
+        }
         self.len = old + 1;
 
         for i in (idx..old).rev() {
@@ -185,11 +188,8 @@ impl NodePage {
             if was_absent {
                 log::debug!("use key page");
                 page.keys = [[0; 0x10]; M];
-            }
-            for i in (idx..old).rev() {
-                if i + 1 == M {
-                    // TODO: handle overflow
-                } else {
+            } else {
+                for i in (idx..old).rev() {
                     page.keys[i + 1] = page.keys[i];
                 }
             }
