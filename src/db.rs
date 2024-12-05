@@ -5,7 +5,7 @@ use thiserror::Error;
 use super::{
     file::{FileIo, IoOptions},
     page::PagePtr,
-    wal::{Wal, WalError, WAL_SIZE, FreelistCache},
+    wal::{Wal, WalError, FreelistCache, DbStats},
     btree,
     value::DataPage,
 };
@@ -21,13 +21,6 @@ pub enum DbError {
     Io(#[from] io::Error),
     #[error("{0}")]
     WalError(#[from] WalError),
-}
-
-#[derive(Debug)]
-pub struct DbStats {
-    pub total: u32,
-    pub free: u32,
-    pub seq: u64,
 }
 
 pub struct Db {
@@ -94,38 +87,31 @@ impl Db {
     }
 
     pub fn insert(&self, key: &[u8]) -> Result<DbValue, DbError> {
-        let wal_lock = self.wal.lock();
+        let mut wal_lock = self.wal.lock();
 
         let old_head = wal_lock.current_head();
-        let mut fl_old = wal_lock.freelist_cache();
+        let fl_old = wal_lock.cache_mut();
         let mut fl_new = FreelistCache::empty();
-        let (new_head, ptr) =
-            btree::insert(&self.file, old_head, &mut fl_old, &mut fl_new, 0, key)?;
-        wal_lock.new_head(&self.file, new_head, fl_old, fl_new)?;
+        let (new_head, ptr) = btree::insert(&self.file, old_head, fl_old, &mut fl_new, 0, key)?;
+        wal_lock.new_head(&self.file, new_head, fl_new)?;
 
         Ok(DbValue { ptr })
     }
 
     pub fn remove(&self, key: &[u8]) -> Result<Option<DbValue>, DbError> {
-        let wal_lock = self.wal.lock();
+        let mut wal_lock = self.wal.lock();
 
         let old_head = wal_lock.current_head();
-        let mut fl_old = wal_lock.freelist_cache();
+        let fl_old = wal_lock.cache_mut();
         let mut fl_new = FreelistCache::empty();
-        let (new_head, ptr) = btree::remove(&self.file, old_head, &mut fl_old, &mut fl_new, key)?;
-        wal_lock.new_head(&self.file, new_head, fl_old, fl_new)?;
+        let (new_head, ptr) = btree::remove(&self.file, old_head, fl_old, &mut fl_new, key)?;
+        wal_lock.new_head(&self.file, new_head, fl_new)?;
 
         Ok(ptr.map(|ptr| DbValue { ptr }))
     }
 
     pub fn stats(&self) -> DbStats {
-        let total = self.file.pages() - WAL_SIZE - FreelistCache::SIZE;
-
-        let wal_lock = self.wal.lock();
-        let free = wal_lock.freelist_size(&self.file);
-        let seq = wal_lock.seq();
-
-        DbStats { total, free, seq }
+        self.wal.lock().stats(&self.file)
     }
 }
 
