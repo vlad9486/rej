@@ -12,6 +12,9 @@ mod btree;
 mod value;
 mod db;
 
+#[cfg(test)]
+mod tests;
+
 pub use self::{
     file::IoOptions,
     wal::{DbStats, WalError},

@@ -85,13 +85,11 @@ impl It {
                 inner.idx += 1;
             } else if inner.idx != 0 {
                 inner.idx -= 1;
+            } else if let Some(ptr) = page.prev {
+                inner.ptr = ptr;
+                inner.idx = u16::MAX;
             } else {
-                if let Some(ptr) = page.prev {
-                    inner.ptr = ptr;
-                    inner.idx = u16::MAX;
-                } else {
-                    self.0 = None;
-                }
+                self.0 = None;
             }
             match page.get_child(idx)? {
                 Child::Leaf(p) => Some((page.get_key(view, idx), p)),
@@ -100,13 +98,11 @@ impl It {
         } else {
             if !inner.forward {
                 inner.idx = page.len() as u16 - 1;
+            } else if let Some(ptr) = page.next {
+                inner.ptr = ptr;
+                inner.idx = 0;
             } else {
-                if let Some(ptr) = page.next {
-                    inner.ptr = ptr;
-                    inner.idx = 0;
-                } else {
-                    self.0 = None;
-                }
+                self.0 = None;
             }
             // Warning: recursion
             self.next(view)

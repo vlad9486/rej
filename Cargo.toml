@@ -8,12 +8,12 @@ license = "MIT"
 [dev-dependencies]
 env_logger = { version = "0.11.5" }
 tempdir = { version = "0.3.7" }
+rand = { version = "0.8.5" }
 
 [dependencies]
 libc = { version = "0.2.167" }
 fs4 = { version = "0.12.0" }
 memmap2 = { version = "0.9.5" }
 thiserror = { version = "2.0" }
-parking_lot = { version = "0.12.3" }
 crc64 = { version = "2.0.0" }
 log = { version = "0.4.22" }

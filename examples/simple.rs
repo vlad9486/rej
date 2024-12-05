@@ -9,6 +9,8 @@ fn main() {
     fs::remove_file("target/db").unwrap_or_default();
     let cfg = Default::default();
     let db = Db::new("target/db", cfg).unwrap();
+    drop(db);
+    let db = Db::new("target/db", cfg).unwrap();
 
     let data = |s| (s..128u8).collect::<Vec<u8>>();
 

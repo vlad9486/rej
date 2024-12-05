@@ -53,7 +53,7 @@ impl NodePage {
 
     pub fn get_key(&self, view: &PageView<'_>, idx: usize) -> Vec<u8> {
         let len = self.key_len(idx);
-        let depth = (len + 0x10 - 1) / 0x10;
+        let depth = len.div_ceil(0x10);
         let mut v = Vec::with_capacity(0x400);
         for i in &self.deep[..depth] {
             let ptr = i.expect("BUG key length inconsistent with key pages");
@@ -149,14 +149,12 @@ impl NodePage {
     ) -> io::Result<()> {
         let view = file.read();
 
-        for couple in &mut self.deep {
-            if let Some(ptr) = couple {
-                fl_new.free(*ptr);
-                let page = *view.page(*ptr);
-                let new_ptr = fl_old.alloc();
-                file.write(new_ptr, &page)?;
-                *ptr = new_ptr;
-            }
+        for ptr in self.deep.iter_mut().flatten() {
+            fl_new.free(*ptr);
+            let page = *view.page(*ptr);
+            let new_ptr = fl_old.alloc();
+            file.write(new_ptr, &page)?;
+            *ptr = new_ptr;
         }
 
         let old = self.len;

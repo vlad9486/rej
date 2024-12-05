@@ -13,9 +13,9 @@ Partially guaranteed ACID.
 * B-Tree algorithms.
 * Full encryption (Adiantum).
 * More tests.
+* More tests for ACID.
 
 ### Difficult
 
 * Extent allocation -> Unlimited value;
-* Tests for ACID -> Proper write-ahead log unroll;
 * Better parallelism.

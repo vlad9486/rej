@@ -1,6 +1,8 @@
-use std::{io, mem};
+use std::{
+    io, mem,
+    sync::{Mutex, MutexGuard},
+};
 
-use parking_lot::{Mutex, MutexGuard};
 use thiserror::Error;
 
 use super::{
@@ -91,7 +93,7 @@ impl Wal {
                 .ok_or(WalError::BadWal)?;
 
             let mut lock = wal.lock();
-            let stats = lock.stats(&file);
+            let stats = lock.stats(file);
             log::info!("did open database, will unroll log, stats: {stats:?}");
             lock.unroll(file, view)?;
             lock.collect_garbage(file)?;
@@ -104,7 +106,7 @@ impl Wal {
     }
 
     pub fn lock(&self) -> WalLock<'_> {
-        WalLock(self.0.lock())
+        WalLock(self.0.lock().expect("poisoned"))
     }
 }
 
@@ -368,36 +370,3 @@ impl FreePage {
 }
 
 unsafe impl PlainData for FreePage {}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use tempdir::TempDir;
-
-    use super::super::file::{FileIo, IoOptions};
-
-    #[test]
-    fn wal() {
-        let env = env_logger::Env::new().filter_or("RUST_LOG", "info");
-        env_logger::try_init_from_env(env).unwrap_or_default();
-
-        let cfg = IoOptions::default();
-        let dir = TempDir::new("rej").unwrap();
-        let path = dir.path().join("test-basic");
-
-        let file = FileIo::new(&path, true, cfg).unwrap();
-        // let wal = Wal::new(true, &file).unwrap();
-        // let ptr = wal.lock().alloc::<()>(&file).unwrap();
-        // assert_eq!(ptr.raw_number(), 1 + WAL_SIZE);
-        // drop(wal);
-
-        // let wal = Wal::new(false, &file).unwrap();
-        // let ptr = wal.lock().alloc::<()>(&file).unwrap();
-        // assert_eq!(ptr.raw_number(), 1 + WAL_SIZE);
-        // drop(wal);
-
-        drop(file);
-        fs::copy(path, "target/db").unwrap();
-    }
-}
