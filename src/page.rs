@@ -11,7 +11,7 @@ where
     type Casted<U>;
 
     fn from_raw_number(number: u32) -> Option<Self>;
-    fn raw_number(&self) -> u32;
+    fn raw_number(self) -> u32;
     fn cast<U>(self) -> Self::Casted<U>;
 }
 
@@ -22,33 +22,12 @@ impl<T> RawPtr for PagePtr<T> {
         NonZeroU32::new(number).map(|n| Self(n, PhantomData))
     }
 
-    fn raw_number(&self) -> u32 {
+    fn raw_number(self) -> u32 {
         self.0.get()
     }
 
     fn cast<U>(self) -> Self::Casted<U> {
         PagePtr(self.0, PhantomData)
-    }
-}
-
-pub trait RawOffset
-where
-    Self: Sized,
-{
-    fn from_raw_offset(offset: u64) -> Option<Self>;
-    fn raw_offset(self) -> u64;
-}
-
-impl<T> RawOffset for T
-where
-    T: RawPtr,
-{
-    fn from_raw_offset(offset: u64) -> Option<Self> {
-        T::from_raw_number((offset / PAGE_SIZE) as u32)
-    }
-
-    fn raw_offset(self) -> u64 {
-        self.raw_number() as u64 * PAGE_SIZE
     }
 }
 

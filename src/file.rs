@@ -3,7 +3,7 @@ use std::{
     ops::Range,
     path::Path,
     slice,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use memmap2::Mmap;
@@ -12,7 +12,7 @@ use fs4::fs_std::FileExt;
 
 use super::{
     utils,
-    page::{PagePtr, RawOffset, PAGE_SIZE},
+    page::{PagePtr, RawPtr, PAGE_SIZE},
 };
 
 /// # Safety
@@ -38,7 +38,7 @@ impl PageView<'_> {
     where
         T: PlainData,
     {
-        let offset = ptr.into().map_or(0, PagePtr::raw_offset) as usize;
+        let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64 * PAGE_SIZE) as usize;
         T::as_this(&self.0, offset)
     }
 }
@@ -52,7 +52,7 @@ pub struct IoOptions {
 pub struct FileIo {
     mmap_populate: bool,
     file: fs::File,
-    file_len: AtomicU64,
+    file_len: AtomicU32,
     mapped: RwLock<Mmap>,
 }
 
@@ -61,7 +61,7 @@ impl FileIo {
         let file = utils::open_file(path, create, cfg.direct_write)?;
         file.lock_exclusive()?;
 
-        let file_len = AtomicU64::new(file.metadata()?.len());
+        let file_len = AtomicU32::new((file.metadata()?.len() / PAGE_SIZE) as u32);
         let mapped = RwLock::new(utils::mmap(&file, cfg.mmap_populate)?);
 
         Ok(FileIo {
@@ -85,7 +85,8 @@ impl FileIo {
     where
         T: PlainData,
     {
-        let offset = ptr.into().map_or(0, PagePtr::raw_offset) + range.start as u64;
+        let offset =
+            (ptr.into().map_or(0, PagePtr::raw_number) as u64) * PAGE_SIZE + range.start as u64;
         let slice = page
             .as_bytes()
             .get(range)
@@ -97,7 +98,7 @@ impl FileIo {
     where
         T: PlainData,
     {
-        let offset = ptr.into().map_or(0, PagePtr::raw_offset);
+        let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64) * PAGE_SIZE;
         utils::write_at(&self.file, page.as_bytes(), offset)
     }
 
@@ -105,20 +106,28 @@ impl FileIo {
         self.file.sync_all()
     }
 
-    pub fn grow<T>(&self, n: u64) -> io::Result<Option<PagePtr<T>>> {
+    pub fn grow<T>(&self, n: u32) -> io::Result<Option<PagePtr<T>>> {
         let mut lock = self.mapped.write();
 
         let old_len = self.file_len.load(Ordering::SeqCst);
 
-        self.file.set_len(old_len + n * PAGE_SIZE)?;
-        self.file_len
-            .store(old_len + n * PAGE_SIZE, Ordering::SeqCst);
+        self.file.set_len((old_len + n) as u64 * PAGE_SIZE)?;
+        self.file_len.store(old_len + n, Ordering::SeqCst);
         *lock = utils::mmap(&self.file, self.mmap_populate)?;
 
-        Ok(PagePtr::from_raw_offset(old_len))
+        Ok(PagePtr::from_raw_number(old_len))
+    }
+
+    pub fn set_pages(&self, pages: u32) -> io::Result<()> {
+        let mut lock = self.mapped.write();
+        self.file.set_len((pages as u64) * PAGE_SIZE)?;
+        self.file_len.store(pages, Ordering::SeqCst);
+        *lock = utils::mmap(&self.file, self.mmap_populate)?;
+
+        Ok(())
     }
 
     pub fn pages(&self) -> u32 {
-        (self.file_len.load(Ordering::SeqCst) / PAGE_SIZE) as u32
+        self.file_len.load(Ordering::SeqCst)
     }
 }

@@ -6,10 +6,15 @@ use super::{
     node::{Alloc, Free, NodePage, Child},
 };
 
-pub fn get<T>(view: &PageView<'_>, mut ptr: PagePtr<NodePage>, key: &[u8]) -> Option<PagePtr<T>> {
+pub fn get<T>(
+    view: &PageView<'_>,
+    mut ptr: PagePtr<NodePage>,
+    table_id: u32,
+    key: &[u8],
+) -> Option<PagePtr<T>> {
     loop {
         let node = view.page(ptr);
-        let idx = node.search(view, key).ok()?;
+        let idx = node.search(view, table_id, key).ok()?;
         match node.get_child(idx)? {
             Child::Node(p) => ptr = p,
             Child::Leaf(p) => return Some(p),
@@ -30,6 +35,7 @@ impl ItInner {
         view: &PageView<'_>,
         head_ptr: PagePtr<NodePage>,
         forward: bool,
+        table_id: u32,
         key: Option<&[u8]>,
     ) -> Option<Self> {
         let mut ptr = head_ptr;
@@ -40,7 +46,7 @@ impl ItInner {
 
         loop {
             let idx = key.map_or((1 - usize::from(forward)) * (node.len() - 1), |key| {
-                node.search(view, key)
+                node.search(view, table_id, key)
                     .unwrap_or_else(|idx| idx + usize::from(forward))
             });
             match node.get_child::<()>(idx)? {
@@ -63,9 +69,10 @@ impl It {
         view: &PageView<'_>,
         head_ptr: PagePtr<NodePage>,
         forward: bool,
+        table_id: u32,
         key: Option<&[u8]>,
     ) -> Self {
-        Self(ItInner::new(view, head_ptr, forward, key))
+        Self(ItInner::new(view, head_ptr, forward, table_id, key))
     }
 
     pub fn next<T>(&mut self, view: &PageView<'_>) -> Option<(Vec<u8>, PagePtr<T>)> {
@@ -112,6 +119,7 @@ pub fn insert<T>(
     old_head: PagePtr<NodePage>,
     fl_old: &mut impl Alloc,
     fl_new: &mut impl Free,
+    table_id: u32,
     key: &[u8],
 ) -> io::Result<(PagePtr<NodePage>, PagePtr<T>)> {
     let view = file.read();
@@ -122,12 +130,12 @@ pub fn insert<T>(
     let new_ptr = fl_old.alloc();
     let mut node = *view.page(old_ptr);
     fl_new.free(old_ptr);
-    let (idx, exact) = match node.search(&view, key) {
+    let (idx, exact) = match node.search(&view, table_id, key) {
         Ok(idx) => (idx, true),
         Err(idx) => (idx, false),
     };
     if !exact {
-        node.insert(file, fl_old, fl_new, idx, key)?;
+        node.insert(file, fl_old, fl_new, idx, table_id, key)?;
     }
 
     let child = node.get_child_or_insert_with(idx, || {

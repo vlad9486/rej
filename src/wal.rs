@@ -4,7 +4,7 @@ use parking_lot::{Mutex, MutexGuard};
 use thiserror::Error;
 
 use super::{
-    file::{FileIo, PlainData},
+    file::{FileIo, PlainData, PageView},
     page::{PagePtr, RawPtr, PAGE_SIZE},
     node::{Alloc, Free, NodePage},
 };
@@ -30,10 +30,11 @@ impl Wal {
                 let inner = RecordSeq {
                     seq: pos.into(),
                     freelist_cache: FreelistCache::empty(),
+                    size: WAL_SIZE + 1 + FreelistCache::SIZE,
                     freelist: None,
                     head,
                 };
-                let page = RecordPage::new(inner, Record::Done);
+                let page = RecordPage::new(inner);
                 let ptr = file.grow(1)?;
 
                 file.write(ptr, &page)?;
@@ -59,6 +60,7 @@ impl Wal {
                     pos: FreelistCache::SIZE,
                     pages,
                 },
+                size: file.pages(),
                 freelist: None,
                 head,
             })))
@@ -68,8 +70,7 @@ impl Wal {
             let it = (0..WAL_SIZE)
                 .map(PagePtr::from_raw_number)
                 .map(|ptr| view.page::<RecordPage>(ptr))
-                .filter_map(RecordPage::check)
-                .map(|(inner, _)| inner);
+                .filter_map(RecordPage::check);
 
             let mut inner = None::<&RecordSeq>;
             for item in it {
@@ -87,7 +88,7 @@ impl Wal {
                 .ok_or(WalError::BadWal)?;
 
             log::info!("did open database, will unroll log");
-            wal.lock().unroll(file)?;
+            wal.lock().unroll(file, view)?;
             log::info!("did unroll log");
 
             Ok(wal)
@@ -119,53 +120,30 @@ impl WalLock<'_> {
         self.0.seq = self.0.seq.wrapping_add(1);
     }
 
-    fn write(&mut self, file: &FileIo, body: Record) -> Result<(), WalError> {
+    fn write(&mut self, file: &FileIo) -> Result<(), WalError> {
         self.next();
-        let page = RecordPage::new(*self.0, body);
+        let page = RecordPage::new(*self.0);
         file.write(self.ptr(), &page)?;
         file.sync()?;
-        log::debug!("action: {body:?}");
 
         Ok(())
     }
 
-    fn unroll(mut self, file: &FileIo) -> Result<(), WalError> {
-        let view = file.read();
-
+    fn unroll(mut self, file: &FileIo, view: PageView<'_>) -> Result<(), WalError> {
         let mut reverse = self.0.seq;
 
         loop {
             let page = view.page(Self::seq_to_ptr(reverse));
-            let Some((inner, body)) = page.check() else {
+            if let Some(inner) = page.check() {
+                *self.0 = *inner;
+                break;
+            } else {
                 reverse = reverse.wrapping_sub(1);
-                continue;
             };
-            match *body {
-                Record::Done => break,
-                Record::Allocate { old_head } => {
-                    self.next();
-                    self.0.freelist = Some(old_head);
-                    self.write(file, Record::RevertedAlloc)?;
-                }
-                Record::Free { old_data } => {
-                    let old_head = view.page(inner.freelist).next;
-                    file.write_range(
-                        inner.freelist,
-                        &FreePage {
-                            next: old_data,
-                            _data: [0; FreePage::PAD],
-                        },
-                        0..mem::size_of::<Option<PagePtr<FreePage>>>(),
-                    )?;
-                    self.next();
-                    self.0.freelist = old_head;
-                    self.write(file, Record::RevertedFree)?;
-                }
-                Record::RevertedAlloc => {}
-                Record::RevertedFree => {}
-            }
-            reverse = reverse.wrapping_sub(1);
         }
+
+        drop(view);
+        file.set_pages(self.0.size)?;
 
         Ok(())
     }
@@ -180,11 +158,12 @@ impl WalLock<'_> {
         } else {
             drop(view);
             let head = file.grow(1)?.expect("grow must yield value");
+
             (head, None)
         };
 
         self.0.freelist = next;
-        self.write(file, Record::Allocate { old_head })?;
+        self.0.size = file.pages();
 
         Ok(old_head.cast())
     }
@@ -198,7 +177,7 @@ impl WalLock<'_> {
         // store in log
         let old_data = view.page(ptr).next;
         self.0.freelist = Some(ptr);
-        self.write(file, Record::Free { old_data })?;
+        let _ = old_data;
         file.write_range(
             ptr,
             &FreePage {
@@ -236,7 +215,7 @@ impl WalLock<'_> {
 
         self.0.head = head;
         self.0.freelist_cache = new;
-        self.write(file, Record::Done)
+        self.write(file)
     }
 
     pub fn current_head(&self) -> PagePtr<NodePage> {
@@ -256,7 +235,7 @@ impl WalLock<'_> {
         x
     }
 
-    pub fn freelist_cache(&mut self) -> FreelistCache {
+    pub fn freelist_cache(&self) -> FreelistCache {
         self.0.freelist_cache
     }
 }
@@ -266,23 +245,17 @@ impl WalLock<'_> {
 struct RecordPage {
     checksum: u64,
     inner: RecordSeq,
-    body: Record,
 }
 
 impl RecordPage {
-    fn new(inner: RecordSeq, body: Record) -> Self {
+    fn new(inner: RecordSeq) -> Self {
         let checksum = crc64::crc64(0, inner.as_bytes());
-        RecordPage {
-            checksum,
-            inner,
-            body,
-        }
+        RecordPage { checksum, inner }
     }
 
-    fn check(&self) -> Option<(&RecordSeq, &Record)> {
+    fn check(&self) -> Option<&RecordSeq> {
         // return None if checksum is wrong
-        (self.checksum == crc64::crc64(0, self.inner.as_bytes()))
-            .then_some((&self.inner, &self.body))
+        (self.checksum == crc64::crc64(0, self.inner.as_bytes())).then_some(&self.inner)
     }
 }
 
@@ -291,6 +264,7 @@ impl RecordPage {
 struct RecordSeq {
     seq: u64,
     freelist_cache: FreelistCache,
+    size: u32,
     freelist: Option<PagePtr<FreePage>>,
     head: PagePtr<NodePage>,
 }
@@ -318,7 +292,7 @@ impl Free for FreelistCache {
 }
 
 impl FreelistCache {
-    pub const SIZE: u32 = 0x2b7;
+    pub const SIZE: u32 = 0x2b0;
 
     pub const fn empty() -> Self {
         FreelistCache {
@@ -365,16 +339,6 @@ impl Iterator for FreelistCache {
             self.pages[self.pos as usize]
         }
     }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-enum Record {
-    Done,
-    Allocate { old_head: PagePtr<FreePage> },
-    Free { old_data: Option<PagePtr<FreePage>> },
-    RevertedAlloc,
-    RevertedFree,
 }
 
 unsafe impl PlainData for RecordPage {}

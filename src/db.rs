@@ -78,14 +78,14 @@ impl Db {
     pub fn retrieve(&self, key: &[u8]) -> Option<DbValue> {
         let head_ptr = self.wal.lock().current_head();
         let view = self.file.read();
-        let ptr = btree::get(&view, head_ptr, key)?;
+        let ptr = btree::get(&view, head_ptr, 0, key)?;
         Some(DbValue { ptr })
     }
 
     pub fn iterator(&self, key: Option<&[u8]>, forward: bool) -> DbIterator {
         let head_ptr = self.wal.lock().current_head();
         let view = self.file.read();
-        DbIterator(btree::It::new(&view, head_ptr, forward, key))
+        DbIterator(btree::It::new(&view, head_ptr, forward, 0, key))
     }
 
     pub fn next(&self, it: &mut DbIterator) -> Option<(Vec<u8>, DbValue)> {
@@ -94,19 +94,20 @@ impl Db {
     }
 
     pub fn insert(&self, key: &[u8]) -> Result<DbValue, DbError> {
-        let mut wal_lock = self.wal.lock();
+        let wal_lock = self.wal.lock();
 
         let old_head = wal_lock.current_head();
         let mut fl_old = wal_lock.freelist_cache();
         let mut fl_new = FreelistCache::empty();
-        let (new_head, ptr) = btree::insert(&self.file, old_head, &mut fl_old, &mut fl_new, key)?;
+        let (new_head, ptr) =
+            btree::insert(&self.file, old_head, &mut fl_old, &mut fl_new, 0, key)?;
         wal_lock.new_head(&self.file, new_head, fl_old, fl_new)?;
 
         Ok(DbValue { ptr })
     }
 
     pub fn remove(&self, key: &[u8]) -> Result<Option<DbValue>, DbError> {
-        let mut wal_lock = self.wal.lock();
+        let wal_lock = self.wal.lock();
 
         let old_head = wal_lock.current_head();
         let mut fl_old = wal_lock.freelist_cache();
