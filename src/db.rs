@@ -68,17 +68,17 @@ impl Db {
         page.data[..page.len].to_vec()
     }
 
-    pub fn retrieve(&self, key: &[u8]) -> Option<DbValue> {
+    pub fn retrieve(&self, table_id: u32, key: &[u8]) -> Option<DbValue> {
         let head_ptr = self.wal.lock().current_head();
         let view = self.file.read();
-        let ptr = btree::get(&view, head_ptr, 0, key)?;
+        let ptr = btree::get(&view, head_ptr, table_id, key)?;
         Some(DbValue { ptr })
     }
 
-    pub fn iterator(&self, key: Option<&[u8]>, forward: bool) -> DbIterator {
+    pub fn iterator(&self, table_id: u32, key: Option<&[u8]>, forward: bool) -> DbIterator {
         let head_ptr = self.wal.lock().current_head();
         let view = self.file.read();
-        DbIterator(btree::It::new(&view, head_ptr, forward, 0, key))
+        DbIterator(btree::It::new(&view, head_ptr, forward, table_id, key))
     }
 
     pub fn next(&self, it: &mut DbIterator) -> Option<(Vec<u8>, DbValue)> {
@@ -86,25 +86,27 @@ impl Db {
             .map(|(key, ptr)| (key, DbValue { ptr }))
     }
 
-    pub fn insert(&self, key: &[u8]) -> Result<DbValue, DbError> {
+    pub fn insert(&self, table_id: u32, key: &[u8]) -> Result<DbValue, DbError> {
         let mut wal_lock = self.wal.lock();
 
         let old_head = wal_lock.current_head();
         let fl_old = wal_lock.cache_mut();
         let mut fl_new = FreelistCache::empty();
-        let (new_head, ptr) = btree::insert(&self.file, old_head, fl_old, &mut fl_new, 0, key)?;
+        let (new_head, ptr) =
+            btree::insert(&self.file, old_head, fl_old, &mut fl_new, table_id, key)?;
         wal_lock.new_head(&self.file, new_head, fl_new)?;
 
         Ok(DbValue { ptr })
     }
 
-    pub fn remove(&self, key: &[u8]) -> Result<Option<DbValue>, DbError> {
+    pub fn remove(&self, table_id: u32, key: &[u8]) -> Result<Option<DbValue>, DbError> {
         let mut wal_lock = self.wal.lock();
 
         let old_head = wal_lock.current_head();
         let fl_old = wal_lock.cache_mut();
         let mut fl_new = FreelistCache::empty();
-        let (new_head, ptr) = btree::remove(&self.file, old_head, fl_old, &mut fl_new, key)?;
+        let (new_head, ptr) =
+            btree::remove(&self.file, old_head, fl_old, &mut fl_new, table_id, key)?;
         wal_lock.new_head(&self.file, new_head, fl_new)?;
 
         Ok(ptr.map(|ptr| DbValue { ptr }))

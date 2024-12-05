@@ -1,4 +1,4 @@
-use std::{fs, panic};
+use std::{fs, panic, path::Path};
 
 use tempdir::TempDir;
 
@@ -6,11 +6,11 @@ use crate::{Db, DbError, DbIterator, DbStats, DbValue, IoOptions};
 
 fn populate(db: Db) -> Result<DbStats, DbError> {
     let data = |s| (s..128u8).collect::<Vec<u8>>();
-    let v = db.insert(b"some key 1, long")?;
+    let v = db.insert(0, b"some key 1, long")?;
     db.write(&v, 0, &data(10))?;
-    let v = db.insert(b"some key 6, too                long")?;
+    let v = db.insert(0, b"some key 6, too                long")?;
     db.write(&v, 0, &data(60))?;
-    let v = db.insert(b"some key 3")?;
+    let v = db.insert(0, b"some key 3")?;
     db.write(&v, 0, &data(30))?;
 
     Ok(db.stats())
@@ -31,7 +31,7 @@ fn check(db: Db) -> bool {
     }
 
     let mut it = It {
-        inner: db.iterator(None, true),
+        inner: db.iterator(0, None, true),
         db,
     };
     let cnt = (&mut it).count();
@@ -45,13 +45,12 @@ fn check(db: Db) -> bool {
             || (cnt == 3 && stats.used == 7))
 }
 
-#[test]
-fn recovery() {
-    let env = env_logger::Env::new().filter_or("RUST_LOG", "info");
+fn recovery_test<const MESS_PAGE: bool>() {
+    let env = env_logger::Env::new().filter_or("RUST_LOG", "warn");
     env_logger::try_init_from_env(env).unwrap_or_default();
 
     let dir = TempDir::new("rej").unwrap();
-    let path = dir.path().join("test-basic");
+    let path = dir.path().join("test-recovery");
 
     let db = Db::new(&path, IoOptions::default()).unwrap();
     drop(db);
@@ -60,20 +59,34 @@ fn recovery() {
     let stats = populate(db).unwrap();
 
     for i in 0..(stats.writes - 1) {
-        let db = Db::new(&path, IoOptions::default()).unwrap();
-        drop(db);
-
-        let err = panic::catch_unwind(|| {
-            let db = Db::new(&path, IoOptions::simulator(i, false)).unwrap();
-            populate(db).unwrap();
-        })
-        .unwrap_err()
-        .downcast::<&str>()
-        .unwrap();
-        assert_eq!(*err, "intentional panic for test");
-
-        let db = Db::new(&path, IoOptions::default()).unwrap();
-        assert!(check(db));
-        fs::remove_file(&path).unwrap();
+        crash_test(&path, IoOptions::simulator(i, MESS_PAGE));
     }
+}
+
+fn crash_test(path: &Path, cfg: IoOptions) {
+    let db = Db::new(path, IoOptions::default()).unwrap();
+    drop(db);
+
+    let err = panic::catch_unwind(move || {
+        let db = Db::new(path, cfg).unwrap();
+        populate(db).unwrap();
+    })
+    .unwrap_err()
+    .downcast::<&str>()
+    .unwrap();
+    assert_eq!(*err, "intentional panic for test");
+
+    let db = Db::new(path, IoOptions::default()).unwrap();
+    assert!(check(db));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn recovery() {
+    recovery_test::<false>();
+}
+
+#[test]
+fn recovery_messed_page() {
+    recovery_test::<true>();
 }

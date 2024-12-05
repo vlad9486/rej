@@ -152,8 +152,9 @@ pub fn remove<T>(
     old_head: PagePtr<NodePage>,
     fl_old: &mut impl Alloc,
     fl_new: &mut impl Free,
+    table_id: u32,
     key: &[u8],
 ) -> io::Result<(PagePtr<NodePage>, Option<PagePtr<T>>)> {
-    let _ = (file, old_head, fl_old, fl_new, key);
+    let _ = (file, old_head, fl_old, fl_new, table_id, key);
     unimplemented!()
 }

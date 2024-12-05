@@ -36,6 +36,14 @@ pub enum Child<T> {
 
 unsafe impl PlainData for NodePage {}
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KeyPage {
+    keys: [[u8; 0x10]; M],
+}
+
+unsafe impl PlainData for KeyPage {}
+
 impl NodePage {
     pub fn len(&self) -> usize {
         self.len
@@ -46,8 +54,6 @@ impl NodePage {
     }
 
     pub fn key_len(&self, idx: usize) -> usize {
-        // let l = self.keys_len[idx / 2];
-        // (l[idx % 2] as usize) << 8 | ((l[3] >> ((idx % 2) * 4)) as usize & 0xf)
         self.keys_len[idx] as usize
     }
 
@@ -202,11 +208,3 @@ impl NodePage {
         Ok(())
     }
 }
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct KeyPage {
-    keys: [[u8; 0x10]; M],
-}
-
-unsafe impl PlainData for KeyPage {}
