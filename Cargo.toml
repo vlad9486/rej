@@ -1,6 +1,6 @@
 [package]
 name = "rej"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "Minimalistic database"
 license = "MIT"
@@ -17,3 +17,4 @@ memmap2 = { version = "0.9.5" }
 thiserror = { version = "2.0" }
 crc64 = { version = "2.0.0" }
 log = { version = "0.4.22" }
+memoffset = { version = "0.9.1" }

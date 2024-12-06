@@ -1,5 +1,5 @@
 use std::{
-    io, mem,
+    io,
     sync::{Mutex, MutexGuard},
 };
 
@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use super::{
     file::{FileIo, PlainData, PageView},
-    page::{PagePtr, RawPtr, PAGE_SIZE},
+    page::{PagePtr, RawPtr},
     node::{Alloc, Free, NodePage},
 };
 
@@ -203,11 +203,8 @@ impl WalLock<'_> {
 
         let mut freelist = self.0.freelist;
         for ptr in &mut self.0.garbage {
-            let page = FreePage {
-                next: freelist,
-                _data: [0; FreePage::PAD],
-            };
-            file.write_range(ptr, &page, 0..mem::size_of::<Option<PagePtr<FreePage>>>())?;
+            let page = FreePage { next: freelist };
+            file.write(ptr, &page)?;
             freelist = Some(ptr);
         }
         self.0.freelist = freelist;
@@ -360,13 +357,9 @@ unsafe impl PlainData for RecordPage {}
 
 unsafe impl PlainData for RecordSeq {}
 
+#[repr(C)]
 pub struct FreePage {
     next: Option<PagePtr<FreePage>>,
-    _data: [u8; Self::PAD],
-}
-
-impl FreePage {
-    const PAD: usize = PAGE_SIZE as usize - mem::size_of::<Option<PagePtr<FreePage>>>();
 }
 
 unsafe impl PlainData for FreePage {}

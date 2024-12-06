@@ -46,7 +46,9 @@ impl Db {
             data: [0; DataPage::CAPACITY],
         };
         page.data[offset..][..buf.len()].clone_from_slice(buf);
-        self.file.write(value.ptr, &page)
+        let page_offset = memoffset::offset_of!(DataPage, data) + offset;
+        self.file
+            .write_range(value.ptr, &page, page_offset..(page_offset + buf.len()))
     }
 
     pub fn length(&self, value: &DbValue) -> usize {
