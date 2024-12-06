@@ -13,6 +13,7 @@ where
     fn from_raw_number(number: u32) -> Option<Self>;
     fn raw_number(self) -> u32;
     fn cast<U>(self) -> Self::Casted<U>;
+    fn add(self, n: u32) -> Self;
 }
 
 impl<T> RawPtr for PagePtr<T> {
@@ -28,6 +29,10 @@ impl<T> RawPtr for PagePtr<T> {
 
     fn cast<U>(self) -> Self::Casted<U> {
         PagePtr(self.0, PhantomData)
+    }
+
+    fn add(self, n: u32) -> Self {
+        unsafe { Self::from_raw_number(self.raw_number().saturating_add(n)).unwrap_unchecked() }
     }
 }
 

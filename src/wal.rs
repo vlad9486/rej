@@ -165,7 +165,7 @@ impl WalLock<'_> {
                 break;
             } else {
                 reverse = reverse.wrapping_sub(1);
-            };
+            }
         }
 
         drop(view);
@@ -175,23 +175,32 @@ impl WalLock<'_> {
     }
 
     fn fill_cache(&mut self, file: &FileIo) -> Result<(), WalError> {
-        let mut freelist = self.0.freelist;
-        let mut alloc = || {
-            if let Some(head) = freelist {
-                freelist = file.read().page(head).next;
-                Ok(head)
-            } else {
-                file.grow(1).map(|p| p.expect("grow must yield value"))
-            }
-        };
-
         log::info!(
             "fill cache, will allocate {} pages",
             self.0.cache.capacity()
         );
+
+        let mut freelist = self.0.freelist;
+
+        let view = file.read();
         while !self.0.cache.is_full() {
-            self.0.cache.put(alloc()?);
+            if let Some(ptr) = freelist {
+                self.0.cache.put(ptr);
+                freelist = view.page(ptr).next;
+            } else {
+                break;
+            }
         }
+        drop(view);
+        if !self.0.cache.is_full() {
+            let ptr = file
+                .grow(self.0.cache.capacity())?
+                .expect("grow must yield value");
+            for i in 0..self.0.cache.capacity() {
+                self.0.cache.put(ptr.add(i));
+            }
+        }
+
         let size = file.pages();
 
         if self.0.freelist != freelist || self.0.size != size {
