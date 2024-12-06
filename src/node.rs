@@ -26,7 +26,9 @@ pub enum Child<T> {
     Leaf(PagePtr<T>),
 }
 
-unsafe impl PlainData for NodePage {}
+unsafe impl PlainData for NodePage {
+    const NAME: &str = "Node";
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -34,7 +36,9 @@ struct KeyPage {
     keys: [[u8; 0x10]; M],
 }
 
-unsafe impl PlainData for KeyPage {}
+unsafe impl PlainData for KeyPage {
+    const NAME: &str = "Key";
+}
 
 impl NodePage {
     pub fn len(&self) -> usize {
@@ -69,15 +73,22 @@ impl NodePage {
         }
     }
 
-    pub fn get_child_or_insert_with<T, F>(&mut self, idx: usize, f: F) -> Child<T>
+    pub fn get_child_or_insert_with<T>(&mut self, idx: usize, alloc: &mut impl Alloc) -> Child<T>
     where
-        F: FnOnce() -> PagePtr<Self>,
+        T: PlainData,
     {
-        let ptr = *self.child[idx].get_or_insert_with(f);
-        match self.stem {
-            true => Child::Node(ptr),
-            false => Child::Leaf(ptr.cast()),
-        }
+        self.get_child(idx).unwrap_or_else(|| match self.stem {
+            true => {
+                let ptr = alloc.alloc();
+                self.child[idx] = Some(ptr);
+                Child::Node(ptr)
+            }
+            false => {
+                let ptr = alloc.alloc();
+                self.child[idx] = Some(ptr.cast());
+                Child::Leaf(ptr)
+            }
+        })
     }
 
     // TODO: SIMD optimization
@@ -180,7 +191,6 @@ impl NodePage {
             let ptr = *self.deep[depth].get_or_insert_with(|| rt.alloc.alloc());
             let mut page = *view.page(ptr);
             if was_absent {
-                log::debug!("use key page");
                 page.keys = [[0; 0x10]; M];
             } else {
                 for i in (idx..old).rev() {

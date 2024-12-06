@@ -8,6 +8,8 @@ pub unsafe trait PlainData
 where
     Self: Sized,
 {
+    const NAME: &str;
+
     fn as_this(slice: &[u8], offset: usize) -> &Self {
         unsafe { &*slice.as_ptr().add(offset).cast::<Self>() }
     }
@@ -19,11 +21,15 @@ where
 }
 
 pub trait Alloc {
-    fn alloc<T>(&mut self) -> PagePtr<T>;
+    fn alloc<T>(&mut self) -> PagePtr<T>
+    where
+        T: PlainData;
 }
 
 pub trait Free {
-    fn free<T>(&mut self, ptr: PagePtr<T>);
+    fn free<T>(&mut self, ptr: PagePtr<T>)
+    where
+        T: PlainData;
 }
 
 pub trait AbstractViewer {

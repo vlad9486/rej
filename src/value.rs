@@ -13,4 +13,6 @@ impl DataPage {
     pub const CAPACITY: usize = PAGE_SIZE as usize - mem::size_of::<usize>();
 }
 
-unsafe impl PlainData for DataPage {}
+unsafe impl PlainData for DataPage {
+    const NAME: &str = "Metadata";
+}

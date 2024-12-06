@@ -2,7 +2,7 @@ use std::io;
 
 use super::{
     page::PagePtr,
-    runtime::{Alloc, Free, AbstractIo, AbstractViewer, Rt},
+    runtime::{PlainData, Alloc, Free, AbstractIo, AbstractViewer, Rt},
     node::{NodePage, Child},
 };
 
@@ -115,7 +115,10 @@ pub fn insert<T>(
     old_head: PagePtr<NodePage>,
     table_id: u32,
     key: &[u8],
-) -> io::Result<(PagePtr<NodePage>, PagePtr<T>)> {
+) -> io::Result<(PagePtr<NodePage>, PagePtr<T>)>
+where
+    T: PlainData,
+{
     let view = rt.io.read();
 
     let old_ptr = old_head;
@@ -132,10 +135,7 @@ pub fn insert<T>(
         node.insert(rt.reborrow(), idx, table_id, key)?;
     }
 
-    let child = node.get_child_or_insert_with(idx, || {
-        log::debug!("use metadata page");
-        rt.alloc.alloc()
-    });
+    let child = node.get_child_or_insert_with(idx, rt.alloc);
     rt.io.write(new_ptr, &node)?;
 
     match child {

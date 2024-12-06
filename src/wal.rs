@@ -289,7 +289,11 @@ pub struct FreelistCache {
 const CACHE_SIZE: usize = 0x18f;
 
 impl Alloc for FreelistCache {
-    fn alloc<T>(&mut self) -> PagePtr<T> {
+    fn alloc<T>(&mut self) -> PagePtr<T>
+    where
+        T: PlainData,
+    {
+        log::debug!("alloc {}", T::NAME);
         self.take()
             .expect("BUG: must be big enough, increase size of freelist cache")
             .cast()
@@ -297,10 +301,14 @@ impl Alloc for FreelistCache {
 }
 
 impl Free for FreelistCache {
-    fn free<T>(&mut self, ptr: PagePtr<T>) {
+    fn free<T>(&mut self, ptr: PagePtr<T>)
+    where
+        T: PlainData,
+    {
         if self.is_full() {
             panic!("BUG: must have enough space, increase size of freelist cache");
         }
+        log::debug!("free {}", T::NAME);
         self.put(ptr.cast());
     }
 }
@@ -346,13 +354,19 @@ impl FreelistCache {
     }
 }
 
-unsafe impl PlainData for RecordPage {}
+unsafe impl PlainData for RecordPage {
+    const NAME: &str = "Record";
+}
 
-unsafe impl PlainData for RecordSeq {}
+unsafe impl PlainData for RecordSeq {
+    const NAME: &str = "RecordInner";
+}
 
 #[repr(C)]
 struct FreePage {
     next: Option<PagePtr<FreePage>>,
 }
 
-unsafe impl PlainData for FreePage {}
+unsafe impl PlainData for FreePage {
+    const NAME: &str = "Free";
+}

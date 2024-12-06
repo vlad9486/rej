@@ -1,12 +1,13 @@
 {
     "cSpell.words": [
+        "adiantum",
         "freelist",
         "libc",
         "memmap",
         "memoffset",
         "mmap",
+        "reborrow",
         "repr",
         "thiserror",
-        "adiantum",
     ]
 }
