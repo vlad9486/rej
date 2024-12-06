@@ -20,8 +20,6 @@ pub enum WalError {
     BadWal,
 }
 
-pub const WAL_SIZE: u32 = 0x100;
-
 #[derive(Debug)]
 pub struct DbStats {
     pub total: u32,
@@ -35,14 +33,16 @@ pub struct DbStats {
 pub struct Wal(Mutex<RecordSeq>);
 
 impl Wal {
+    const SIZE: u32 = 0x100;
+
     pub fn new(create: bool, file: &FileIo) -> Result<Self, WalError> {
         if create {
-            let head = PagePtr::from_raw_number(WAL_SIZE)
+            let head = PagePtr::from_raw_number(Self::SIZE)
                 .ok_or(io::Error::from(io::ErrorKind::UnexpectedEof))?;
-            for pos in 0..WAL_SIZE {
+            for pos in 0..Self::SIZE {
                 let inner = RecordSeq {
                     seq: pos.into(),
-                    size: WAL_SIZE + 1,
+                    size: Self::SIZE + 1,
                     freelist: None,
                     head,
                     garbage: FreelistCache::empty(),
@@ -58,7 +58,7 @@ impl Wal {
             file.sync()?;
 
             let s = Self(Mutex::new(RecordSeq {
-                seq: (WAL_SIZE - 1).into(),
+                seq: (Self::SIZE - 1).into(),
                 size: file.pages(),
                 freelist: None,
                 head,
@@ -73,7 +73,7 @@ impl Wal {
         } else {
             let view = file.read();
 
-            let it = (0..WAL_SIZE)
+            let it = (0..Self::SIZE)
                 .map(PagePtr::from_raw_number)
                 .map(|ptr| view.page::<RecordPage>(ptr))
                 .filter_map(RecordPage::check);
@@ -115,7 +115,7 @@ pub struct WalLock<'a>(MutexGuard<'a, RecordSeq>);
 
 impl WalLock<'_> {
     pub fn stats(&self, file: &FileIo) -> DbStats {
-        let total = file.pages() - WAL_SIZE;
+        let total = file.pages() - Wal::SIZE;
         let cached = self.0.cache.len();
         let free = self.freelist_size(file);
         let used = total - cached - free;
@@ -136,7 +136,7 @@ impl WalLock<'_> {
     }
 
     fn seq_to_ptr(seq: u64) -> Option<PagePtr<RecordPage>> {
-        let pos = (seq % u64::from(WAL_SIZE)) as u32;
+        let pos = (seq % u64::from(Wal::SIZE)) as u32;
         PagePtr::<RecordPage>::from_raw_number(pos)
     }
 
@@ -190,11 +190,13 @@ impl WalLock<'_> {
         while !self.0.cache.is_full() {
             self.0.cache.put(alloc()?);
         }
+        let size = file.pages();
 
-        self.0.freelist = freelist;
-        self.0.size = file.pages();
-
-        self.write(file)?;
+        if self.0.freelist != freelist || self.0.size != size {
+            self.0.freelist = freelist;
+            self.0.size = size;
+            self.write(file)?;
+        }
 
         Ok(())
     }
@@ -203,14 +205,18 @@ impl WalLock<'_> {
         log::info!("collect garbage, will free {} pages", self.0.garbage.len());
 
         let mut freelist = self.0.freelist;
-        for ptr in &mut self.0.garbage {
+        while let Some(ptr) = self.0.garbage.take() {
             let page = FreePage { next: freelist };
             file.write(ptr, &page)?;
             freelist = Some(ptr);
         }
-        self.0.freelist = freelist;
 
-        self.write(file)
+        if self.0.freelist != freelist {
+            self.0.freelist = freelist;
+            self.write(file)?;
+        }
+
+        Ok(())
     }
 
     pub fn new_head<T>(mut self, file: &FileIo, head: PagePtr<T>) -> Result<(), WalError> {
@@ -259,7 +265,6 @@ impl RecordPage {
     }
 
     fn check(&self) -> Option<&RecordSeq> {
-        // return None if checksum is wrong
         (self.checksum == crc64::crc64(0, self.inner.as_bytes())).then_some(&self.inner)
     }
 }
@@ -285,7 +290,7 @@ const CACHE_SIZE: usize = 0x18f;
 
 impl Alloc for FreelistCache {
     fn alloc<T>(&mut self) -> PagePtr<T> {
-        self.next()
+        self.take()
             .expect("BUG: must be big enough, increase size of freelist cache")
             .cast()
     }
@@ -293,53 +298,45 @@ impl Alloc for FreelistCache {
 
 impl Free for FreelistCache {
     fn free<T>(&mut self, ptr: PagePtr<T>) {
-        if self.put(ptr.cast()).is_some() {
+        if self.is_full() {
             panic!("BUG: must have enough space, increase size of freelist cache");
         }
+        self.put(ptr.cast());
     }
 }
 
 impl FreelistCache {
-    pub const SIZE: u32 = CACHE_SIZE as u32;
+    const SIZE: u32 = CACHE_SIZE as u32;
 
-    pub const fn empty() -> Self {
+    const fn empty() -> Self {
         FreelistCache {
             pos: 0,
             pages: [None; CACHE_SIZE],
         }
     }
 
-    pub fn is_full(&self) -> bool {
+    const fn is_full(&self) -> bool {
         self.capacity() == 0
     }
 
-    pub fn capacity(&self) -> u32 {
+    const fn capacity(&self) -> u32 {
         Self::SIZE - self.pos
     }
 
-    pub fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    pub fn len(&self) -> u32 {
+    const fn len(&self) -> u32 {
         self.pos
     }
 
-    pub fn put(&mut self, ptr: PagePtr<FreePage>) -> Option<PagePtr<FreePage>> {
-        if self.is_full() {
-            return Some(ptr);
-        }
+    fn put(&mut self, ptr: PagePtr<FreePage>) {
         self.pages[self.pos as usize] = Some(ptr);
         self.pos += 1;
-
-        None
     }
-}
 
-impl Iterator for FreelistCache {
-    type Item = PagePtr<FreePage>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn take(&mut self) -> Option<PagePtr<FreePage>> {
         if self.is_empty() {
             None
         } else {
@@ -354,7 +351,7 @@ unsafe impl PlainData for RecordPage {}
 unsafe impl PlainData for RecordSeq {}
 
 #[repr(C)]
-pub struct FreePage {
+struct FreePage {
     next: Option<PagePtr<FreePage>>,
 }
 
