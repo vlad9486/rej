@@ -6,11 +6,11 @@ The size of the value must not be larger than the page size minus the metadata s
 
 The size of the key can vary and is limited by to 1 kiB.
 
-Partially guaranteed ACID.
+ACID is not tested well.
 
 ## TODO:
 
-* B-Tree algorithms.
+* B-Tree remove value, fix table scanning.
 * Full encryption (Adiantum).
 * More tests.
 * More tests for ACID.

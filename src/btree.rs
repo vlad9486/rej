@@ -1,9 +1,9 @@
-use std::io;
+use std::{io, mem};
 
 use super::{
-    page::PagePtr,
+    page::{PagePtr, RawPtr},
     runtime::{PlainData, Alloc, Free, AbstractIo, AbstractViewer, Rt},
-    node::{NodePage, Child},
+    node::{NodePage, Child, Key, M},
 };
 
 pub fn get<T>(
@@ -12,9 +12,17 @@ pub fn get<T>(
     table_id: u32,
     key: &[u8],
 ) -> Option<PagePtr<T>> {
+    let key = Key {
+        table_id,
+        bytes: key.into(),
+    };
+
     loop {
         let node = view.page(ptr);
-        let idx = node.search(view, table_id, key).ok()?;
+        let idx = node.search(view, &key).unwrap_or_else(|idx| idx);
+        if idx == M {
+            return None;
+        }
         match node.get_child(idx)? {
             Child::Node(p) => ptr = p,
             Child::Leaf(p) => return Some(p),
@@ -47,7 +55,12 @@ impl ItInner {
         loop {
             // TODO: careful arithmetics
             let idx = key.map_or(usize::from(!forward) * node.len(), |key| {
-                node.search(view, table_id, key).unwrap_or_else(|idx| idx)
+                let key = Key {
+                    table_id,
+                    bytes: key.into(),
+                };
+
+                node.search(view, &key).unwrap_or_else(|idx| idx)
             }) - usize::from(!forward);
             match node.get_child::<()>(idx)? {
                 Child::Node(p) => ptr = p,
@@ -92,7 +105,7 @@ impl It {
                 self.0 = None;
             }
             match page.get_child(idx)? {
-                Child::Leaf(p) => Some((page.get_key(view, idx), p)),
+                Child::Leaf(p) => Some((page.get_key(view, idx).bytes.to_vec(), p)),
                 _ => panic!("BUG: `ptr` should point on leaf node"),
             }
         } else {
@@ -119,28 +132,77 @@ pub fn insert<T>(
 where
     T: PlainData,
 {
-    let view = rt.io.read();
-
-    let old_ptr = old_head;
-
-    // TODO: loop, balance
-    let new_ptr = rt.alloc.alloc();
-    let mut node = *view.page(old_ptr);
-    rt.free.free(old_ptr);
-    let (idx, exact) = match node.search(&view, table_id, key) {
-        Ok(idx) => (idx, true),
-        Err(idx) => (idx, false),
+    let key = Key {
+        table_id,
+        bytes: key.into(),
     };
-    if !exact {
-        node.insert(rt.reborrow(), idx, table_id, key)?;
+
+    let mut stack = Vec::<Level>::with_capacity(6);
+
+    struct Level {
+        ptr: PagePtr<NodePage>,
+        node: NodePage,
+        idx: usize,
     }
 
-    let child = node.get_child_or_insert_with(idx, rt.alloc);
-    rt.io.write(new_ptr, &node)?;
+    let view = rt.io.read();
+    let mut ptr = old_head;
 
-    match child {
-        Child::Node(_) => unimplemented!(),
-        Child::Leaf(ptr) => Ok((new_ptr, ptr)),
+    let mut leaf = loop {
+        let node = *view.page(ptr);
+        if node.is_leaf() {
+            break node;
+        } else {
+            let idx = node.search(&view, &key).unwrap_or_else(|idx| idx);
+            stack.push(Level { ptr, node, idx });
+            ptr = node.child[idx].unwrap_or_else(|| panic!("{idx}"));
+        }
+    };
+
+    match leaf.search(&view, &key) {
+        Ok(idx) => {
+            let new_head = stack.first().map(|level| level.ptr).unwrap_or(ptr);
+            let meta = leaf.child[idx].expect("must be here, just find").cast();
+            Ok((new_head, meta))
+        }
+        Err(idx) => {
+            let new_child_ptr = rt.alloc.alloc::<T>().cast();
+
+            rt.free.free(mem::replace(&mut ptr, rt.alloc.alloc()));
+
+            let mut split = leaf.insert::<T>(rt.reborrow(), ptr, new_child_ptr, idx, &key)?;
+
+            while let Some(mut level) = stack.pop() {
+                rt.free.free(mem::replace(&mut level.ptr, rt.alloc.alloc()));
+
+                level.node.child[level.idx] = Some(ptr);
+                if let Some((key, sib_ptr)) = split {
+                    split = level.node.insert::<T>(
+                        rt.reborrow(),
+                        level.ptr,
+                        sib_ptr,
+                        level.idx,
+                        &key,
+                    )?;
+                }
+
+                rt.io.write(level.ptr, &level.node)?;
+                ptr = level.ptr;
+            }
+
+            if let Some((key, sib_ptr)) = split {
+                let parent_ptr = rt.alloc.alloc();
+
+                let mut root = NodePage::empty();
+                root.append_child(ptr);
+                root.insert::<T>(rt.reborrow(), parent_ptr, sib_ptr, 0, &key)?;
+
+                rt.io.write(parent_ptr, &root)?;
+                ptr = parent_ptr;
+            }
+
+            Ok((ptr, new_child_ptr.cast()))
+        }
     }
 }
 
@@ -153,4 +215,56 @@ pub fn remove<T>(
 ) -> io::Result<(PagePtr<NodePage>, Option<PagePtr<T>>)> {
     let _ = (&mut rt, old_head, table_id, key);
     unimplemented!()
+}
+
+// for debug
+pub fn print(view: &impl AbstractViewer, ptr: PagePtr<NodePage>) {
+    // this is sad that I cannot debug B-Tree without already existing B-Tree
+    use std::collections::BTreeMap;
+
+    let mut nodes = BTreeMap::new();
+    let mut edges = Vec::new();
+
+    fn print_inner(
+        view: &impl AbstractViewer,
+        ptr: PagePtr<NodePage>,
+        nodes: &mut BTreeMap<u32, String>,
+        edges: &mut Vec<(u32, u32)>,
+    ) {
+        let page = view.page(ptr);
+        let node_text = (0..(page.len() - usize::from(!page.is_leaf())))
+            .map(|idx| page.get_key(view, idx))
+            .map(|key| {
+                format!(
+                    "{}:{}",
+                    key.table_id,
+                    std::str::from_utf8(&key.bytes).unwrap()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        nodes.insert(ptr.raw_number(), format!("\"{node_text}\""));
+
+        for n in (0..page.len()).map(|idx| page.child[idx].unwrap()) {
+            edges.push((ptr.raw_number(), n.raw_number()));
+            if !page.is_leaf() {
+                print_inner(view, n, nodes, edges);
+            }
+        }
+    }
+
+    print_inner(view, ptr, &mut nodes, &mut edges);
+
+    let edges = edges
+        .into_iter()
+        .map(|(b, e)| {
+            format!(
+                "{} -> {}",
+                nodes[&b],
+                nodes.get(&e).cloned().unwrap_or(e.to_string())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    print!("digraph {{\n{edges}\n}}\n");
 }

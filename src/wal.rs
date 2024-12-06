@@ -305,10 +305,12 @@ impl Alloc for FreelistCache {
     where
         T: PlainData,
     {
-        log::debug!("alloc {}", T::NAME);
-        self.take()
+        let ptr = self
+            .take()
             .expect("BUG: must be big enough, increase size of freelist cache")
-            .cast()
+            .cast();
+        log::debug!("alloc {}, {ptr:?}", T::NAME);
+        ptr
     }
 }
 
@@ -320,7 +322,7 @@ impl Free for FreelistCache {
         if self.is_full() {
             panic!("BUG: must have enough space, increase size of freelist cache");
         }
-        log::debug!("free {}", T::NAME);
+        log::debug!("free {} {:?}", T::NAME, ptr);
         self.put(ptr.cast());
     }
 }

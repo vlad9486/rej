@@ -16,6 +16,8 @@ pub struct DbValue {
     ptr: PagePtr<DataPage>,
 }
 
+pub struct DbIterator(btree::It);
+
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error("{0}")]
@@ -71,6 +73,12 @@ impl Db {
         page.data[..page.len].to_vec()
     }
 
+    pub fn print(&self) {
+        let head_ptr = self.wal.lock().current_head();
+        let view = self.file.read();
+        btree::print(&view, head_ptr);
+    }
+
     pub fn retrieve(&self, table_id: u32, key: &[u8]) -> Option<DbValue> {
         let head_ptr = self.wal.lock().current_head();
         let view = self.file.read();
@@ -119,5 +127,3 @@ impl Db {
         self.wal.lock().stats(&self.file)
     }
 }
-
-pub struct DbIterator(btree::It);
