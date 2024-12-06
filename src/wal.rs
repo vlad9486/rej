@@ -42,11 +42,12 @@ impl Wal {
             for pos in 0..Self::SIZE {
                 let inner = RecordSeq {
                     seq: pos.into(),
-                    size: Self::SIZE + 1,
-                    freelist: None,
-                    head,
                     garbage: FreelistCache::empty(),
                     cache: FreelistCache::empty(),
+                    size: Self::SIZE + 1,
+                    __padding: 0,
+                    freelist: None,
+                    head,
                 };
                 let page = RecordPage::new(inner);
                 let ptr = file.grow(1)?;
@@ -59,11 +60,12 @@ impl Wal {
 
             let s = Self(Mutex::new(RecordSeq {
                 seq: (Self::SIZE - 1).into(),
-                size: file.pages(),
-                freelist: None,
-                head,
                 garbage: FreelistCache::empty(),
                 cache: FreelistCache::empty(),
+                size: file.pages(),
+                __padding: 0,
+                freelist: None,
+                head,
             }));
             s.lock().fill_cache(file)?;
 
@@ -276,6 +278,7 @@ struct RecordSeq {
     garbage: FreelistCache,
     cache: FreelistCache,
     size: u32,
+    __padding: u32,
     freelist: Option<PagePtr<FreePage>>,
     head: PagePtr<()>,
 }

@@ -10,15 +10,24 @@ const M: usize = 0x100;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NodePage {
+    // if the node is root or branch, the pointer is `Self`,
+    // but if the node is leaf, the pointer is a metadata page
     child: [Option<PagePtr<Self>>; M],
+    // length in bytes of each key
     keys_len: [u16; M],
+    // table id is a prefix of the key
     table_id: [u32; M],
-    // maximal key size is `0x40 * 0x10 = 1 kiB` bytes
-    deep: [Option<PagePtr<KeyPage>>; 0x40],
+    // pointers to additional pages that stores keys
+    // maximal key size is `0x40 * 0x10 = 1 kiB`
+    key: [Option<PagePtr<KeyPage>>; 0x40],
+    // for fast iterating, only relevant for leaf nodes
     pub next: Option<PagePtr<Self>>,
     pub prev: Option<PagePtr<Self>>,
-    stem: bool,
-    len: usize,
+    // if stem is true than the node is root or branch
+    // otherwise it is a leaf
+    stem: u16,
+    // number of children
+    len: u16,
 }
 
 pub enum Child<T> {
@@ -42,11 +51,15 @@ unsafe impl PlainData for KeyPage {
 
 impl NodePage {
     pub fn len(&self) -> usize {
-        self.len
+        self.len as usize
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    fn is_leaf(&self) -> bool {
+        self.stem == 0
     }
 
     pub fn key_len(&self, idx: usize) -> usize {
@@ -57,7 +70,7 @@ impl NodePage {
         let len = self.key_len(idx);
         let depth = len.div_ceil(0x10);
         let mut v = Vec::with_capacity(0x400);
-        for i in &self.deep[..depth] {
+        for i in &self.key[..depth] {
             let ptr = i.expect("BUG key length inconsistent with key pages");
             let page = view.page(ptr);
             v.extend_from_slice(&page.keys[idx]);
@@ -67,9 +80,9 @@ impl NodePage {
 
     pub fn get_child<T>(&self, idx: usize) -> Option<Child<T>> {
         let ptr = self.child[idx];
-        match self.stem {
-            true => ptr.map(Child::Node),
-            false => ptr.map(PagePtr::cast).map(Child::Leaf),
+        match self.is_leaf() {
+            false => ptr.map(Child::Node),
+            true => ptr.map(PagePtr::cast).map(Child::Leaf),
         }
     }
 
@@ -77,13 +90,13 @@ impl NodePage {
     where
         T: PlainData,
     {
-        self.get_child(idx).unwrap_or_else(|| match self.stem {
-            true => {
+        self.get_child(idx).unwrap_or_else(|| match self.is_leaf() {
+            false => {
                 let ptr = alloc.alloc();
                 self.child[idx] = Some(ptr);
                 Child::Node(ptr)
             }
-            false => {
+            true => {
                 let ptr = alloc.alloc();
                 self.child[idx] = Some(ptr.cast());
                 Child::Leaf(ptr)
@@ -100,14 +113,14 @@ impl NodePage {
     ) -> Result<usize, usize> {
         let mut depth = 0;
 
-        let i = self.table_id[..self.len].binary_search(&table_id)?;
+        let i = self.table_id[..self.len()].binary_search(&table_id)?;
         let mut range = i..(i + 1);
 
         while range.start > 0 && self.table_id[range.start - 1] == table_id {
             range.start -= 1;
         }
 
-        while range.end < self.len - 1 && self.table_id[range.end] == table_id {
+        while range.end < self.len() - 1 && self.table_id[range.end] == table_id {
             range.end += 1;
         }
 
@@ -117,7 +130,7 @@ impl NodePage {
             key_b[..l].clone_from_slice(&key[..l]);
             key = &key[l..];
 
-            let buffer = if let Some(ptr) = self.deep[depth] {
+            let buffer = if let Some(ptr) = self.key[depth] {
                 &view.page(ptr).keys
             } else {
                 break;
@@ -133,7 +146,7 @@ impl NodePage {
                 range.start -= 1;
             }
 
-            while range.end < self.len - 1 && buffer[range.end] == key_b {
+            while range.end < self.len() - 1 && buffer[range.end] == key_b {
                 range.end += 1;
             }
 
@@ -156,7 +169,7 @@ impl NodePage {
     ) -> io::Result<()> {
         let view = rt.io.read();
 
-        for ptr in self.deep.iter_mut().flatten() {
+        for ptr in self.key.iter_mut().flatten() {
             rt.free.free(*ptr);
             let page = *view.page(*ptr);
             let new_ptr = rt.alloc.alloc();
@@ -164,11 +177,11 @@ impl NodePage {
             *ptr = new_ptr;
         }
 
-        let old = self.len;
+        let old = self.len();
         if old == M {
             panic!("BUG: handle overflow");
         }
-        self.len = old + 1;
+        self.len = (old + 1) as u16;
 
         for i in (idx..old).rev() {
             self.child[i + 1] = self.child[i];
@@ -183,12 +196,12 @@ impl NodePage {
         let mut depth = 0;
         let view = rt.io.read();
         loop {
-            let was_absent = self.deep[depth].is_none();
+            let was_absent = self.key[depth].is_none();
             let chunk = it.next();
             if was_absent && chunk.is_none() {
                 break;
             }
-            let ptr = *self.deep[depth].get_or_insert_with(|| rt.alloc.alloc());
+            let ptr = *self.key[depth].get_or_insert_with(|| rt.alloc.alloc());
             let mut page = *view.page(ptr);
             if was_absent {
                 page.keys = [[0; 0x10]; M];

@@ -3,7 +3,11 @@ use std::{io, mem, slice};
 use super::page::PagePtr;
 
 /// # Safety
-/// must obey `repr(C)`, must be bitwise copy and has size less or equal `PAGE_SIZE`
+/// `Self` must:
+/// - obey `repr(C)`
+/// - be bitwise copy
+/// - has size less or equal `PAGE_SIZE`.
+/// - be free of padding
 pub unsafe trait PlainData
 where
     Self: Sized,
