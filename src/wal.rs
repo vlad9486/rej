@@ -1,14 +1,15 @@
 use std::{
     io,
+    ops::DerefMut,
     sync::{Mutex, MutexGuard},
 };
 
 use thiserror::Error;
 
 use super::{
-    file::{FileIo, PlainData, PageView},
     page::{PagePtr, RawPtr},
-    node::{Alloc, Free, NodePage},
+    runtime::{Alloc, Free, PlainData, AbstractIo, AbstractViewer},
+    file::{FileIo, PageView},
 };
 
 #[derive(Debug, Error)]
@@ -212,14 +213,8 @@ impl WalLock<'_> {
         self.write(file)
     }
 
-    pub fn new_head(
-        mut self,
-        file: &FileIo,
-        head: PagePtr<NodePage>,
-        garbage: FreelistCache,
-    ) -> Result<(), WalError> {
-        self.0.head = head;
-        self.0.garbage = garbage;
+    pub fn new_head<T>(mut self, file: &FileIo, head: PagePtr<T>) -> Result<(), WalError> {
+        self.0.head = head.cast();
         self.write(file)?;
         self.collect_garbage(file)?;
         self.fill_cache(file)?;
@@ -227,12 +222,13 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    pub fn current_head(&self) -> PagePtr<NodePage> {
-        self.0.head
+    pub fn current_head<T>(&self) -> PagePtr<T> {
+        self.0.head.cast()
     }
 
-    pub fn cache_mut(&mut self) -> &mut FreelistCache {
-        &mut self.0.cache
+    pub fn cache_mut(&mut self) -> (&mut FreelistCache, &mut FreelistCache) {
+        let inner = self.0.deref_mut();
+        (&mut inner.cache, &mut inner.garbage)
     }
 
     fn freelist_size(&self, file: &FileIo) -> u32 {
@@ -276,7 +272,7 @@ struct RecordSeq {
     cache: FreelistCache,
     size: u32,
     freelist: Option<PagePtr<FreePage>>,
-    head: PagePtr<NodePage>,
+    head: PagePtr<()>,
 }
 
 #[derive(Clone, Copy)]

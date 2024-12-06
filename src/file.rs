@@ -1,8 +1,7 @@
 use std::{
-    fs, io, mem,
+    fs, io,
     ops::Range,
     path::Path,
-    slice,
     sync::{
         atomic::{AtomicU32, Ordering},
         RwLock, RwLockReadGuard,
@@ -15,28 +14,13 @@ use fs4::fs_std::FileExt;
 use super::{
     utils,
     page::{PagePtr, RawPtr, PAGE_SIZE},
+    runtime::{PlainData, AbstractIo, AbstractViewer},
 };
-
-/// # Safety
-/// must obey `repr(C)`, must be bitwise copy and has size less or equal `PAGE_SIZE`
-pub unsafe trait PlainData
-where
-    Self: Sized,
-{
-    fn as_this(slice: &[u8], offset: usize) -> &Self {
-        unsafe { &*slice.as_ptr().add(offset).cast::<Self>() }
-    }
-
-    fn as_bytes(&self) -> &[u8] {
-        let raw_ptr = (self as *const Self).cast();
-        unsafe { slice::from_raw_parts(raw_ptr, mem::size_of::<Self>()) }
-    }
-}
 
 pub struct PageView<'a>(RwLockReadGuard<'a, Mmap>);
 
-impl PageView<'_> {
-    pub fn page<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> &T
+impl AbstractViewer for PageView<'_> {
+    fn page<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> &T
     where
         T: PlainData,
     {
@@ -108,10 +92,6 @@ impl FileIo {
         })
     }
 
-    pub fn read(&self) -> PageView<'_> {
-        PageView(self.mapped.read().expect("poisoned"))
-    }
-
     pub fn write_range<T>(
         &self,
         ptr: impl Into<Option<PagePtr<T>>>,
@@ -129,15 +109,6 @@ impl FileIo {
             .expect("`range` must be in the range");
         self.write_stats(offset);
         utils::write_at(&self.file, slice, offset)
-    }
-
-    pub fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, page: &T) -> io::Result<()>
-    where
-        T: PlainData,
-    {
-        let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64) * PAGE_SIZE;
-        self.write_stats(offset);
-        utils::write_at(&self.file, page.as_bytes(), offset)
     }
 
     fn write_stats(&self, offset: u64) {
@@ -191,5 +162,22 @@ impl FileIo {
 
     pub fn writes(&self) -> u32 {
         self.write_counter.load(Ordering::SeqCst)
+    }
+}
+
+impl AbstractIo for FileIo {
+    type Viewer<'a> = PageView<'a>;
+
+    fn read(&self) -> Self::Viewer<'_> {
+        PageView(self.mapped.read().expect("poisoned"))
+    }
+
+    fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, page: &T) -> io::Result<()>
+    where
+        T: PlainData,
+    {
+        let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64) * PAGE_SIZE;
+        self.write_stats(offset);
+        utils::write_at(&self.file, page.as_bytes(), offset)
     }
 }

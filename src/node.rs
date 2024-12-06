@@ -1,17 +1,9 @@
 use std::io;
 
 use super::{
-    file::{PlainData, FileIo, PageView},
     page::{PagePtr, RawPtr},
+    runtime::{PlainData, Alloc, Free, AbstractIo, AbstractViewer, Rt},
 };
-
-pub trait Alloc {
-    fn alloc<T>(&mut self) -> PagePtr<T>;
-}
-
-pub trait Free {
-    fn free<T>(&mut self, ptr: PagePtr<T>);
-}
 
 const M: usize = 0x100;
 
@@ -57,7 +49,7 @@ impl NodePage {
         self.keys_len[idx] as usize
     }
 
-    pub fn get_key(&self, view: &PageView<'_>, idx: usize) -> Vec<u8> {
+    pub fn get_key(&self, view: &impl AbstractViewer, idx: usize) -> Vec<u8> {
         let len = self.key_len(idx);
         let depth = len.div_ceil(0x10);
         let mut v = Vec::with_capacity(0x400);
@@ -91,7 +83,7 @@ impl NodePage {
     // TODO: SIMD optimization
     pub fn search(
         &self,
-        view: &PageView<'_>,
+        view: &impl AbstractViewer,
         table_id: u32,
         mut key: &[u8],
     ) -> Result<usize, usize> {
@@ -146,20 +138,18 @@ impl NodePage {
 
     pub fn insert(
         &mut self,
-        file: &FileIo,
-        fl_old: &mut impl Alloc,
-        fl_new: &mut impl Free,
+        rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
         table_id: u32,
         key: &[u8],
     ) -> io::Result<()> {
-        let view = file.read();
+        let view = rt.io.read();
 
         for ptr in self.deep.iter_mut().flatten() {
-            fl_new.free(*ptr);
+            rt.free.free(*ptr);
             let page = *view.page(*ptr);
-            let new_ptr = fl_old.alloc();
-            file.write(new_ptr, &page)?;
+            let new_ptr = rt.alloc.alloc();
+            rt.io.write(new_ptr, &page)?;
             *ptr = new_ptr;
         }
 
@@ -180,14 +170,14 @@ impl NodePage {
 
         let mut it = key.chunks(0x10);
         let mut depth = 0;
-        let view = file.read();
+        let view = rt.io.read();
         loop {
             let was_absent = self.deep[depth].is_none();
             let chunk = it.next();
             if was_absent && chunk.is_none() {
                 break;
             }
-            let ptr = *self.deep[depth].get_or_insert_with(|| fl_old.alloc());
+            let ptr = *self.deep[depth].get_or_insert_with(|| rt.alloc.alloc());
             let mut page = *view.page(ptr);
             if was_absent {
                 log::debug!("use key page");
@@ -201,7 +191,7 @@ impl NodePage {
             if let Some(chunk) = chunk {
                 page.keys[idx][..chunk.len()].clone_from_slice(chunk);
             }
-            file.write(ptr, &page)?;
+            rt.io.write(ptr, &page)?;
 
             depth += 1;
         }

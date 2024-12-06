@@ -1,13 +1,13 @@
 use std::io;
 
 use super::{
-    file::{FileIo, PageView},
     page::PagePtr,
-    node::{Alloc, Free, NodePage, Child},
+    runtime::{Alloc, Free, AbstractIo, AbstractViewer, Rt},
+    node::{NodePage, Child},
 };
 
 pub fn get<T>(
-    view: &PageView<'_>,
+    view: &impl AbstractViewer,
     mut ptr: PagePtr<NodePage>,
     table_id: u32,
     key: &[u8],
@@ -32,7 +32,7 @@ pub struct ItInner {
 
 impl ItInner {
     fn new(
-        view: &PageView<'_>,
+        view: &impl AbstractViewer,
         head_ptr: PagePtr<NodePage>,
         forward: bool,
         table_id: u32,
@@ -66,7 +66,7 @@ impl ItInner {
 
 impl It {
     pub fn new(
-        view: &PageView<'_>,
+        view: &impl AbstractViewer,
         head_ptr: PagePtr<NodePage>,
         forward: bool,
         table_id: u32,
@@ -75,7 +75,7 @@ impl It {
         Self(ItInner::new(view, head_ptr, forward, table_id, key))
     }
 
-    pub fn next<T>(&mut self, view: &PageView<'_>) -> Option<(Vec<u8>, PagePtr<T>)> {
+    pub fn next<T>(&mut self, view: &impl AbstractViewer) -> Option<(Vec<u8>, PagePtr<T>)> {
         let inner = self.0.as_mut()?;
 
         let idx = usize::from(inner.idx);
@@ -111,34 +111,32 @@ impl It {
 }
 
 pub fn insert<T>(
-    file: &FileIo,
+    mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
     old_head: PagePtr<NodePage>,
-    fl_old: &mut impl Alloc,
-    fl_new: &mut impl Free,
     table_id: u32,
     key: &[u8],
 ) -> io::Result<(PagePtr<NodePage>, PagePtr<T>)> {
-    let view = file.read();
+    let view = rt.io.read();
 
     let old_ptr = old_head;
 
     // TODO: loop, balance
-    let new_ptr = fl_old.alloc();
+    let new_ptr = rt.alloc.alloc();
     let mut node = *view.page(old_ptr);
-    fl_new.free(old_ptr);
+    rt.free.free(old_ptr);
     let (idx, exact) = match node.search(&view, table_id, key) {
         Ok(idx) => (idx, true),
         Err(idx) => (idx, false),
     };
     if !exact {
-        node.insert(file, fl_old, fl_new, idx, table_id, key)?;
+        node.insert(rt.reborrow(), idx, table_id, key)?;
     }
 
     let child = node.get_child_or_insert_with(idx, || {
         log::debug!("use metadata page");
-        fl_old.alloc()
+        rt.alloc.alloc()
     });
-    file.write(new_ptr, &node)?;
+    rt.io.write(new_ptr, &node)?;
 
     match child {
         Child::Node(_) => unimplemented!(),
@@ -148,13 +146,11 @@ pub fn insert<T>(
 
 // TODO: remove value
 pub fn remove<T>(
-    file: &FileIo,
+    mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
     old_head: PagePtr<NodePage>,
-    fl_old: &mut impl Alloc,
-    fl_new: &mut impl Free,
     table_id: u32,
     key: &[u8],
 ) -> io::Result<(PagePtr<NodePage>, Option<PagePtr<T>>)> {
-    let _ = (file, old_head, fl_old, fl_new, table_id, key);
+    let _ = (&mut rt, old_head, table_id, key);
     unimplemented!()
 }

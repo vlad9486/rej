@@ -3,10 +3,11 @@ use std::{io, path::Path};
 use thiserror::Error;
 
 use super::{
-    file::{FileIo, IoOptions},
     page::PagePtr,
-    wal::{Wal, WalError, FreelistCache, DbStats},
+    runtime::{AbstractIo, AbstractViewer, Rt},
+    file::{FileIo, IoOptions},
     btree,
+    wal::{Wal, WalError, DbStats},
     value::DataPage,
 };
 
@@ -92,11 +93,11 @@ impl Db {
         let mut wal_lock = self.wal.lock();
 
         let old_head = wal_lock.current_head();
-        let fl_old = wal_lock.cache_mut();
-        let mut fl_new = FreelistCache::empty();
-        let (new_head, ptr) =
-            btree::insert(&self.file, old_head, fl_old, &mut fl_new, table_id, key)?;
-        wal_lock.new_head(&self.file, new_head, fl_new)?;
+        let (alloc, free) = wal_lock.cache_mut();
+        let io = &self.file;
+        let rt = Rt { alloc, free, io };
+        let (new_head, ptr) = btree::insert(rt, old_head, table_id, key)?;
+        wal_lock.new_head(&self.file, new_head)?;
 
         Ok(DbValue { ptr })
     }
@@ -105,11 +106,11 @@ impl Db {
         let mut wal_lock = self.wal.lock();
 
         let old_head = wal_lock.current_head();
-        let fl_old = wal_lock.cache_mut();
-        let mut fl_new = FreelistCache::empty();
-        let (new_head, ptr) =
-            btree::remove(&self.file, old_head, fl_old, &mut fl_new, table_id, key)?;
-        wal_lock.new_head(&self.file, new_head, fl_new)?;
+        let (alloc, free) = wal_lock.cache_mut();
+        let io = &self.file;
+        let rt = Rt { alloc, free, io };
+        let (new_head, ptr) = btree::remove(rt, old_head, table_id, key)?;
+        wal_lock.new_head(&self.file, new_head)?;
 
         Ok(ptr.map(|ptr| DbValue { ptr }))
     }
