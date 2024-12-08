@@ -1,4 +1,4 @@
-use std::{io, mem};
+use std::io;
 
 use super::{
     page::{PagePtr, RawPtr},
@@ -9,14 +9,8 @@ use super::{
 pub fn get<T>(
     view: &impl AbstractViewer,
     mut ptr: PagePtr<NodePage>,
-    table_id: u32,
-    key: &[u8],
+    key: Key<'_>,
 ) -> Option<PagePtr<T>> {
-    let key = Key {
-        table_id,
-        bytes: key.into(),
-    };
-
     loop {
         let node = view.page(ptr);
         let idx = node.search(view, &key).unwrap_or_else(|idx| idx);
@@ -123,97 +117,107 @@ impl It {
     }
 }
 
-pub fn insert<T>(
-    mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-    old_head: PagePtr<NodePage>,
-    table_id: u32,
-    key: &[u8],
-) -> io::Result<(PagePtr<NodePage>, PagePtr<T>)>
-where
-    T: PlainData,
-{
-    let key = Key {
-        table_id,
-        bytes: key.into(),
-    };
+struct Level {
+    ptr: PagePtr<NodePage>,
+    node: NodePage,
+    idx: usize,
+}
 
+fn walk(
+    view: &impl AbstractViewer,
+    root: PagePtr<NodePage>,
+    key: &Key<'_>,
+) -> (
+    PagePtr<NodePage>,
+    NodePage,
+    Vec<Level>,
+    Result<usize, usize>,
+) {
     let mut stack = Vec::<Level>::with_capacity(6);
+    let mut ptr = root;
 
-    struct Level {
-        ptr: PagePtr<NodePage>,
-        node: NodePage,
-        idx: usize,
-    }
-
-    let view = rt.io.read();
-    let mut ptr = old_head;
-
-    let mut leaf = loop {
+    let leaf = loop {
         let node = *view.page(ptr);
         if node.is_leaf() {
             break node;
         } else {
-            let idx = node.search(&view, &key).unwrap_or_else(|idx| idx);
+            let idx = node.search(view, key).unwrap_or_else(|idx| idx);
             stack.push(Level { ptr, node, idx });
             ptr = node.child[idx].unwrap_or_else(|| panic!("{idx}"));
         }
     };
+    let idx = leaf.search(view, key);
+    (ptr, leaf, stack, idx)
+}
 
-    match leaf.search(&view, &key) {
+pub fn insert<T>(
+    mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+    root: PagePtr<NodePage>,
+    key: Key<'_>,
+) -> io::Result<(PagePtr<NodePage>, PagePtr<T>)>
+where
+    T: PlainData,
+{
+    let (mut ptr, mut leaf, mut stack, res) = walk(&rt.io.read(), root, &key);
+
+    let idx = match res {
         Ok(idx) => {
-            let new_head = stack.first().map(|level| level.ptr).unwrap_or(ptr);
             let meta = leaf.child[idx].expect("must be here, just find").cast();
-            Ok((new_head, meta))
+            return Ok((root, meta));
         }
-        Err(idx) => {
-            let new_child_ptr = rt.alloc.alloc::<T>().cast();
+        Err(idx) => idx,
+    };
 
-            rt.free.free(mem::replace(&mut ptr, rt.alloc.alloc()));
+    let meta = rt.alloc.alloc();
 
-            let mut split = leaf.insert::<T>(rt.reborrow(), ptr, new_child_ptr, idx, &key)?;
+    rt.realloc(&mut ptr);
 
-            while let Some(mut level) = stack.pop() {
-                rt.free.free(mem::replace(&mut level.ptr, rt.alloc.alloc()));
+    let mut split = leaf.insert::<T>(rt.reborrow(), ptr, meta.cast(), idx, &key)?;
 
-                level.node.child[level.idx] = Some(ptr);
-                if let Some((key, sib_ptr)) = split {
-                    split = level.node.insert::<T>(
-                        rt.reborrow(),
-                        level.ptr,
-                        sib_ptr,
-                        level.idx,
-                        &key,
-                    )?;
-                }
+    while let Some(mut level) = stack.pop() {
+        rt.realloc(&mut level.ptr);
 
-                rt.io.write(level.ptr, &level.node)?;
-                ptr = level.ptr;
-            }
-
-            if let Some((key, sib_ptr)) = split {
-                let parent_ptr = rt.alloc.alloc();
-
-                let mut root = NodePage::empty();
-                root.append_child(ptr);
-                root.insert::<T>(rt.reborrow(), parent_ptr, sib_ptr, 0, &key)?;
-
-                rt.io.write(parent_ptr, &root)?;
-                ptr = parent_ptr;
-            }
-
-            Ok((ptr, new_child_ptr.cast()))
+        level.node.child[level.idx] = Some(ptr);
+        if let Some((key, p)) = split {
+            let rt = rt.reborrow();
+            split = level.node.insert::<T>(rt, level.ptr, p, level.idx, &key)?;
         }
+
+        rt.io.write(level.ptr, &level.node)?;
+        ptr = level.ptr;
     }
+
+    if let Some((key, p)) = split {
+        let parent_ptr = rt.alloc.alloc();
+
+        let mut root = NodePage::empty();
+        root.append_child(ptr);
+        root.insert::<T>(rt.reborrow(), parent_ptr, p, 0, &key)?;
+
+        rt.io.write(parent_ptr, &root)?;
+        ptr = parent_ptr;
+    }
+
+    Ok((ptr, meta))
 }
 
 // TODO: remove value
 pub fn remove<T>(
     mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-    old_head: PagePtr<NodePage>,
-    table_id: u32,
-    key: &[u8],
-) -> io::Result<(PagePtr<NodePage>, Option<PagePtr<T>>)> {
-    let _ = (&mut rt, old_head, table_id, key);
+    root: PagePtr<NodePage>,
+    key: Key<'_>,
+) -> io::Result<(PagePtr<NodePage>, Option<PagePtr<T>>)>
+where
+    T: PlainData,
+{
+    let (mut ptr, mut leaf, mut stack, res) = walk(&rt.io.read(), root, &key);
+
+    let idx = match res {
+        Err(_) => return Ok((root, None)),
+        Ok(idx) => idx,
+    };
+
+    let _ = (rt.reborrow(), idx, &mut leaf, &mut stack, &mut ptr, key);
     unimplemented!()
 }
 

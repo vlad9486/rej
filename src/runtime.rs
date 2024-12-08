@@ -69,3 +69,16 @@ impl<A, F, Io> Rt<'_, A, F, Io> {
         }
     }
 }
+
+impl<A, F, Io> Rt<'_, A, F, Io>
+where
+    A: Alloc,
+    F: Free,
+{
+    pub fn realloc<T>(&mut self, ptr: &mut PagePtr<T>)
+    where
+        T: PlainData,
+    {
+        self.free.free(mem::replace(ptr, self.alloc.alloc()));
+    }
+}

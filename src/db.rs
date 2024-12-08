@@ -7,6 +7,7 @@ use super::{
     runtime::{AbstractIo, AbstractViewer, Rt},
     file::{FileIo, IoOptions},
     btree,
+    node::Key,
     wal::{Wal, WalError, DbStats},
     value::DataPage,
 };
@@ -81,8 +82,12 @@ impl Db {
 
     pub fn retrieve(&self, table_id: u32, key: &[u8]) -> Option<DbValue> {
         let head_ptr = self.wal.lock().current_head();
+        let key = Key {
+            table_id,
+            bytes: key.into(),
+        };
         let view = self.file.read();
-        let ptr = btree::get(&view, head_ptr, table_id, key)?;
+        let ptr = btree::get(&view, head_ptr, key)?;
         Some(DbValue { ptr })
     }
 
@@ -98,26 +103,34 @@ impl Db {
     }
 
     pub fn insert(&self, table_id: u32, key: &[u8]) -> Result<DbValue, DbError> {
-        let mut wal_lock = self.wal.lock();
+        let key = Key {
+            table_id,
+            bytes: key.into(),
+        };
 
+        let mut wal_lock = self.wal.lock();
         let old_head = wal_lock.current_head();
         let (alloc, free) = wal_lock.cache_mut();
         let io = &self.file;
         let rt = Rt { alloc, free, io };
-        let (new_head, ptr) = btree::insert(rt, old_head, table_id, key)?;
+        let (new_head, ptr) = btree::insert(rt, old_head, key)?;
         wal_lock.new_head(&self.file, new_head)?;
 
         Ok(DbValue { ptr })
     }
 
     pub fn remove(&self, table_id: u32, key: &[u8]) -> Result<Option<DbValue>, DbError> {
-        let mut wal_lock = self.wal.lock();
+        let key = Key {
+            table_id,
+            bytes: key.into(),
+        };
 
+        let mut wal_lock = self.wal.lock();
         let old_head = wal_lock.current_head();
         let (alloc, free) = wal_lock.cache_mut();
         let io = &self.file;
         let rt = Rt { alloc, free, io };
-        let (new_head, ptr) = btree::remove(rt, old_head, table_id, key)?;
+        let (new_head, ptr) = btree::remove(rt, old_head, key)?;
         wal_lock.new_head(&self.file, new_head)?;
 
         Ok(ptr.map(|ptr| DbValue { ptr }))
