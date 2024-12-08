@@ -13,7 +13,10 @@ pub fn get<T>(
 ) -> Option<PagePtr<T>> {
     loop {
         let node = view.page(ptr);
-        let idx = node.search(view, &key).unwrap_or_else(|idx| idx);
+        let idx = node
+            .search(view, &key)
+            .or_else(|idx| if node.is_leaf() { Err(()) } else { Ok(idx) })
+            .ok()?;
         if idx == M {
             return None;
         }
@@ -201,7 +204,6 @@ where
     Ok((ptr, meta))
 }
 
-// TODO: remove value
 pub fn remove<T>(
     mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
     root: PagePtr<NodePage>,
@@ -217,13 +219,53 @@ where
         Ok(idx) => idx,
     };
 
-    let _ = (rt.reborrow(), idx, &mut leaf, &mut stack, &mut ptr, key);
-    unimplemented!()
+    rt.realloc(&mut ptr);
+    let mut underflow = leaf.will_underflow();
+    let (meta, _) = leaf.remove(rt.reborrow(), idx)?.expect("just find");
+    rt.io.write(ptr, &leaf)?;
+
+    let view = rt.io.read();
+    while let Some(mut level) = stack.pop() {
+        rt.realloc(&mut level.ptr);
+        if underflow {
+            let left = (level.idx > 0)
+                .then(|| {
+                    let ptr = level.node.child[level.idx - 1]?;
+                    Some((*view.page(ptr), ptr)).filter(|(page, _)| !page.will_underflow())
+                })
+                .flatten();
+            let right = (level.idx < level.node.len() - 1)
+                .then(|| {
+                    let ptr = level.node.child[level.idx + 1]?;
+                    Some((*view.page(ptr), ptr)).filter(|(page, _)| !page.will_underflow())
+                })
+                .flatten();
+            let donor = [left, right]
+                .into_iter()
+                .flatten()
+                .max_by(|a, b| a.0.len().cmp(&b.0.len()));
+
+            if let Some((donor_page, donor_ptr)) = donor {
+                let _ = donor_page;
+                let _ = donor_ptr;
+                underflow = false;
+                // TODO: handle underflow
+            } else {
+                // TODO: handle underflow
+                underflow = level.node.will_underflow();
+            }
+        }
+        level.node.child[level.idx] = Some(ptr);
+        rt.io.write(level.ptr, &level.node)?;
+        ptr = level.ptr;
+    }
+
+    Ok((ptr, Some(meta)))
 }
 
 // for debug
 pub fn print(view: &impl AbstractViewer, ptr: PagePtr<NodePage>) {
-    // this is sad that I cannot debug B-Tree without already existing B-Tree
+    // this is sad that I cannot debug B-Tree without using already existing B-Tree
     use std::collections::BTreeMap;
 
     let mut nodes = BTreeMap::new();

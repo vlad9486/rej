@@ -82,6 +82,10 @@ impl NodePage {
         self.len() == 0
     }
 
+    pub fn will_underflow(&self) -> bool {
+        self.len() <= K
+    }
+
     pub fn is_leaf(&self) -> bool {
         self.stem == 0
     }
@@ -296,5 +300,54 @@ impl NodePage {
         }
 
         Ok(())
+    }
+
+    pub fn remove<'c, T>(
+        &mut self,
+        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+        idx: usize,
+    ) -> io::Result<Option<(PagePtr<T>, Key<'c>)>> {
+        let new_len = self.len() - 1;
+        self.len = new_len as u16;
+
+        let old_ptr = self.child[idx];
+        let old_key_len = self.keys_len[idx];
+        let old_table_id = self.table_id[idx];
+
+        for i in idx..new_len {
+            self.child[i] = self.child[i + 1];
+            self.keys_len[i] = self.keys_len[i + 1];
+            self.table_id[i] = self.table_id[i + 1];
+        }
+        // just in case
+        self.child[new_len] = None;
+
+        // start with small allocation, optimistically assume the key is small
+        let mut v = Vec::with_capacity(0x10 * 4);
+        let view = rt.io.read();
+        for ptr in self.key.iter_mut() {
+            let Some(ptr) = ptr else {
+                break;
+            };
+            let mut page = *view.page(*ptr);
+            rt.realloc(ptr);
+            v.extend_from_slice(&page.keys[idx]);
+            for i in idx..new_len {
+                page.keys[i] = page.keys[i + 1];
+            }
+            rt.io.write(*ptr, &page)?;
+        }
+        v.truncate(old_key_len as usize);
+
+        let key = Key {
+            table_id: old_table_id,
+            bytes: v.into(),
+        };
+        Ok(old_ptr.map(|ptr| (ptr.cast(), key)))
+    }
+
+    pub fn replace_key<'c, 'd>(&mut self, idx: usize, key: Key<'c>) -> Key<'d> {
+        let _ = (idx, key);
+        unimplemented!()
     }
 }

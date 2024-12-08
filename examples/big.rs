@@ -14,7 +14,7 @@ fn main() {
     drop(db);
     let db = Db::new(&path, cfg).unwrap();
 
-    let mut indexes = (0..491).collect::<Vec<u16>>();
+    let mut indexes = (0..1000).collect::<Vec<u16>>();
 
     {
         use rand::{rngs::StdRng, SeedableRng, seq::SliceRandom};
@@ -37,6 +37,9 @@ fn main() {
             .unwrap_or_else(|| panic!("{key}"));
         assert_eq!(db.read_to_vec(&value), &i.to_le_bytes());
     }
+
+    db.remove(0, b"key 030").unwrap().unwrap();
+    assert!(db.retrieve(0, b"key 030").is_none());
 
     // let mut it = db.iterator(0, None, true);
     // while let Some((k, _)) = db.next(&mut it) {
