@@ -94,7 +94,7 @@ impl NodePage {
         self.keys_len[idx] as usize
     }
 
-    pub fn get_key<'c>(&self, view: &impl AbstractViewer, idx: usize) -> Key<'c> {
+    pub fn get_key_old<'c>(&self, view: &impl AbstractViewer, idx: usize) -> Key<'c> {
         let len = self.key_len(idx);
         let depth = len.div_ceil(0x10);
         // start with small allocation, optimistically assume the key is small
@@ -102,6 +102,27 @@ impl NodePage {
         for i in &self.key[..depth] {
             let ptr = i.expect("BUG key length inconsistent with key pages");
             let page = view.page(ptr);
+            v.extend_from_slice(&page.keys[idx]);
+        }
+        v.truncate(len);
+        Key {
+            table_id: self.table_id[idx],
+            bytes: Cow::Owned(v),
+        }
+    }
+
+    fn get_key<'c>(
+        &self,
+        rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+        idx: usize,
+    ) -> Key<'c> {
+        let len = self.key_len(idx);
+        let depth = len.div_ceil(0x10);
+        // start with small allocation, optimistically assume the key is small
+        let mut v = Vec::with_capacity(0x10 * 4);
+        for i in &self.key[..depth] {
+            let ptr = i.expect("BUG key length inconsistent with key pages");
+            let page = rt.look(ptr);
             v.extend_from_slice(&page.keys[idx]);
         }
         v.truncate(len);
@@ -255,7 +276,7 @@ impl NodePage {
 
         if self.len() == M {
             let new_ptr = self.split(rt.reborrow(), this_ptr)?;
-            let key = self.get_key(&rt.io.read(), K - 1);
+            let key = self.get_key(rt.reborrow(), K - 1);
 
             Ok(Some((key, new_ptr)))
         } else {
