@@ -5,7 +5,12 @@ use super::{
     runtime::{PlainData, Alloc, Free, AbstractIo, AbstractViewer, Rt},
 };
 
+#[cfg(feature = "small")]
+pub const M: usize = 0x8;
+
+#[cfg(not(feature = "small"))]
 pub const M: usize = 0x100;
+
 const K: usize = M / 2;
 
 #[repr(C)]

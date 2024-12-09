@@ -229,46 +229,54 @@ where
     while let Some(mut level) = stack.pop() {
         rt.realloc(&mut level.ptr);
         if underflow {
-            let left = (level.idx > 0).then(|| {
+            let mut left = (level.idx > 0).then(|| {
                 let ptr = level.node.child[level.idx - 1].expect("left neighbor always present");
-                (*view.page(ptr), ptr)
+                NodeWithPtr {
+                    node: *view.page(ptr),
+                    ptr,
+                }
             });
-            let right = (level.idx < level.node.len() - 1)
-                .then(|| level.node.child[level.idx + 1].map(|ptr| (*view.page(ptr), ptr)))
+            let mut right = (level.idx < level.node.len() - 1)
+                .then(|| {
+                    level.node.child[level.idx + 1].map(|ptr| NodeWithPtr {
+                        node: *view.page(ptr),
+                        ptr,
+                    })
+                })
                 .flatten();
 
-            let donor = match (
-                left.filter(|(page, _)| page.can_donate()),
-                right.filter(|(page, _)| page.can_donate()),
-            ) {
-                (None, None) => None,
-                (Some((page, ptr)), None) => Some((page, ptr, false)),
-                (None, Some((page, ptr))) => Some((page, ptr, true)),
-                (Some((l_page, l_ptr)), Some((r_page, r_ptr))) => {
-                    if l_page.len() >= r_page.len() {
-                        Some((l_page, l_ptr, false))
-                    } else {
-                        Some((r_page, r_ptr, true))
-                    }
+            if let Some(donor) = &mut left {
+                if donor.can_donate() && right.as_ref().map_or(true, |r| r.le(donor)) {
+                    // TODO: borrow from left
+                    let _ = donor.ptr;
+                    underflow = false;
+                    continue;
                 }
-            };
+            }
 
-            if let Some((mut donor_page, donor_ptr, side)) = donor {
-                underflow = false;
-                if side {
-                    let (child, key) = donor_page
-                        .remove::<NodePage>(rt.reborrow(), 0)?
-                        .expect("msg");
-                    let parent_key = level.node.replace_key(level.idx, key);
-                    rt.io.write(level.ptr, &level.node)?;
-                    rt.io.write(donor_ptr, &donor_page)?;
-
-                    let _ = (child, parent_key);
+            if let Some(donor) = &mut right {
+                if donor.can_donate() {
+                    // TODO: borrow from right
+                    let _ = donor.ptr;
+                    underflow = false;
+                    continue;
                 }
-                // TODO: handle underflow
-            } else {
-                // TODO: handle underflow
+            }
+
+            if let Some(neighbor) = left {
+                if right.as_ref().map_or(true, |r| r.gt(&neighbor)) {
+                    // TODO: merge with left
+                    let _ = neighbor.ptr;
+                    underflow = !level.node.can_donate();
+                    continue;
+                }
+            }
+
+            if let Some(neighbor) = right {
+                // TODO: merge with right
+                let _ = neighbor.ptr;
                 underflow = !level.node.can_donate();
+                continue;
             }
         }
         level.node.child[level.idx] = Some(ptr);
@@ -277,6 +285,29 @@ where
     }
 
     Ok((ptr, Some(meta)))
+}
+
+struct NodeWithPtr {
+    node: NodePage,
+    ptr: PagePtr<NodePage>,
+}
+
+impl NodeWithPtr {
+    fn can_donate(&self) -> bool {
+        self.node.can_donate()
+    }
+}
+
+impl PartialEq for NodeWithPtr {
+    fn eq(&self, other: &Self) -> bool {
+        self.node.len().eq(&other.node.len())
+    }
+}
+
+impl PartialOrd for NodeWithPtr {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.node.len().partial_cmp(&other.node.len())
+    }
 }
 
 // for debug

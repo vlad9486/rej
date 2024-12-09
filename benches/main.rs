@@ -16,7 +16,7 @@ fn insert(c: &mut Criterion) {
 
     let db = Db::new(&path, IoOptions::default()).unwrap();
 
-    const NUM: u16 = 40000;
+    const NUM: u16 = 100;
     let mut indexes = (0..NUM).collect::<Vec<_>>();
 
     {
