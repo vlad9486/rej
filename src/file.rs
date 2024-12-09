@@ -168,6 +168,12 @@ impl AbstractIo for FileIo {
         self.write_stats(offset);
         utils::write_at(&self.file, page.as_bytes(), offset)
     }
+
+    fn write_bytes(&self, ptr: impl Into<Option<PagePtr<()>>>, bytes: &[u8]) -> io::Result<()> {
+        let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64) * PAGE_SIZE;
+        self.write_stats(offset);
+        utils::write_at(&self.file, bytes, offset)
+    }
 }
 
 pub struct PageView<'a>(RwLockReadGuard<'a, Mmap>);
@@ -179,5 +185,10 @@ impl AbstractViewer for PageView<'_> {
     {
         let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64 * PAGE_SIZE) as usize;
         T::as_this(&self.0[offset..])
+    }
+
+    fn bytes(&self, ptr: impl Into<Option<PagePtr<()>>>) -> &[u8] {
+        let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64 * PAGE_SIZE) as usize;
+        &self.0[offset..][..PAGE_SIZE as usize]
     }
 }
