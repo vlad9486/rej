@@ -272,14 +272,13 @@ impl NodePage {
         key: &[u8],
     ) -> io::Result<()> {
         let mut it = key.chunks(0x10);
-        let mut depth = 0;
-        loop {
+        for ptr in &mut self.key {
             let chunk = it.next();
-            let absent = self.key[depth].is_none();
+            let absent = ptr.is_none();
             if absent && chunk.is_none() {
                 break;
             }
-            let ptr = *self.key[depth].get_or_insert_with(|| rt.create());
+            let ptr = *ptr.get_or_insert_with(|| rt.create());
             let page = rt.mutate(ptr);
             if !absent {
                 for i in (idx..old_len).rev() {
@@ -290,8 +289,6 @@ impl NodePage {
             if let Some(chunk) = chunk {
                 page.keys[idx][..chunk.len()].clone_from_slice(chunk);
             }
-
-            depth += 1;
         }
 
         Ok(())
