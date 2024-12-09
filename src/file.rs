@@ -17,18 +17,6 @@ use super::{
     runtime::{PlainData, AbstractIo, AbstractViewer},
 };
 
-pub struct PageView<'a>(RwLockReadGuard<'a, Mmap>);
-
-impl AbstractViewer for PageView<'_> {
-    fn page<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> &T
-    where
-        T: PlainData,
-    {
-        let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64 * PAGE_SIZE) as usize;
-        T::as_this(&self.0, offset)
-    }
-}
-
 #[derive(Default, Clone, Copy)]
 pub struct IoOptions {
     pub direct_write: bool,
@@ -179,5 +167,17 @@ impl AbstractIo for FileIo {
         let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64) * PAGE_SIZE;
         self.write_stats(offset);
         utils::write_at(&self.file, page.as_bytes(), offset)
+    }
+}
+
+pub struct PageView<'a>(RwLockReadGuard<'a, Mmap>);
+
+impl AbstractViewer for PageView<'_> {
+    fn page<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> &T
+    where
+        T: PlainData,
+    {
+        let offset = (ptr.into().map_or(0, PagePtr::raw_number) as u64 * PAGE_SIZE) as usize;
+        T::as_this(&self.0[offset..])
     }
 }

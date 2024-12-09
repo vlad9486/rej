@@ -14,8 +14,8 @@ where
 {
     const NAME: &str;
 
-    fn as_this(slice: &[u8], offset: usize) -> &Self {
-        unsafe { &*slice.as_ptr().add(offset).cast::<Self>() }
+    fn as_this(slice: &[u8]) -> &Self {
+        unsafe { &*slice.as_ptr().cast::<Self>() }
     }
 
     fn as_bytes(&self) -> &[u8] {
