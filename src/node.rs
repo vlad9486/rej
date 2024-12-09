@@ -82,8 +82,8 @@ impl NodePage {
         self.len() == 0
     }
 
-    pub fn will_underflow(&self) -> bool {
-        self.len() <= K
+    pub fn can_donate(&self) -> bool {
+        self.len() > K
     }
 
     pub fn is_leaf(&self) -> bool {
@@ -228,7 +228,7 @@ impl NodePage {
             key_page.keys[K..]
                 .iter_mut()
                 .zip(temp.iter_mut())
-                .for_each(|(from, to)| *to = mem::replace(from, [0; 0x10]));
+                .for_each(|(from, to)| *to = mem::take(from));
 
             let new_page = rt.mutate::<KeyPage>(new_page_ptr);
             *new = Some(new_page_ptr);
@@ -284,7 +284,6 @@ impl NodePage {
         }
     }
 
-    // TODO: optimize
     fn insert_key(
         &mut self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
@@ -359,7 +358,7 @@ impl NodePage {
     }
 
     #[allow(dead_code)]
-    pub fn replace_key<'c, 'd>(&mut self, idx: usize, key: Key<'c>) -> Key<'d> {
+    pub fn replace_key<'d>(&mut self, idx: usize, key: Key<'_>) -> Key<'d> {
         let _ = (idx, key);
         unimplemented!()
     }

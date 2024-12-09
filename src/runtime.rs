@@ -154,7 +154,7 @@ where
             .storage
             .get(&ptr.raw_number())
             .expect("read or create before mutate");
-        T::as_this(&*bytes)
+        T::as_this(bytes)
     }
 
     pub fn flush(self) -> io::Result<()> {

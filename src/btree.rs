@@ -221,7 +221,7 @@ where
     };
 
     rt.realloc(&mut ptr);
-    let mut underflow = leaf.will_underflow();
+    let mut underflow = !leaf.can_donate();
     let (meta, _) = leaf.remove(rt.reborrow(), idx)?.expect("just find");
     rt.io.write(ptr, &leaf)?;
 
@@ -229,31 +229,46 @@ where
     while let Some(mut level) = stack.pop() {
         rt.realloc(&mut level.ptr);
         if underflow {
-            let left = (level.idx > 0)
-                .then(|| {
-                    let ptr = level.node.child[level.idx - 1]?;
-                    Some((*view.page(ptr), ptr)).filter(|(page, _)| !page.will_underflow())
-                })
-                .flatten();
+            let left = (level.idx > 0).then(|| {
+                let ptr = level.node.child[level.idx - 1].expect("left neighbor always present");
+                (*view.page(ptr), ptr)
+            });
             let right = (level.idx < level.node.len() - 1)
-                .then(|| {
-                    let ptr = level.node.child[level.idx + 1]?;
-                    Some((*view.page(ptr), ptr)).filter(|(page, _)| !page.will_underflow())
-                })
+                .then(|| level.node.child[level.idx + 1].map(|ptr| (*view.page(ptr), ptr)))
                 .flatten();
-            let donor = [left, right]
-                .into_iter()
-                .flatten()
-                .max_by(|a, b| a.0.len().cmp(&b.0.len()));
 
-            if let Some((donor_page, donor_ptr)) = donor {
-                let _ = donor_page;
-                let _ = donor_ptr;
+            let donor = match (
+                left.filter(|(page, _)| page.can_donate()),
+                right.filter(|(page, _)| page.can_donate()),
+            ) {
+                (None, None) => None,
+                (Some((page, ptr)), None) => Some((page, ptr, false)),
+                (None, Some((page, ptr))) => Some((page, ptr, true)),
+                (Some((l_page, l_ptr)), Some((r_page, r_ptr))) => {
+                    if l_page.len() >= r_page.len() {
+                        Some((l_page, l_ptr, false))
+                    } else {
+                        Some((r_page, r_ptr, true))
+                    }
+                }
+            };
+
+            if let Some((mut donor_page, donor_ptr, side)) = donor {
                 underflow = false;
+                if side {
+                    let (child, key) = donor_page
+                        .remove::<NodePage>(rt.reborrow(), 0)?
+                        .expect("msg");
+                    let parent_key = level.node.replace_key(level.idx, key);
+                    rt.io.write(level.ptr, &level.node)?;
+                    rt.io.write(donor_ptr, &donor_page)?;
+
+                    let _ = (child, parent_key);
+                }
                 // TODO: handle underflow
             } else {
                 // TODO: handle underflow
-                underflow = level.node.will_underflow();
+                underflow = !level.node.can_donate();
             }
         }
         level.node.child[level.idx] = Some(ptr);
