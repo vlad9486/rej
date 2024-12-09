@@ -102,7 +102,7 @@ impl It {
                 self.0 = None;
             }
             match page.get_child(idx)? {
-                Child::Leaf(p) => Some((page.get_key(view, idx).bytes.to_vec(), p)),
+                Child::Leaf(p) => Some((page.get_key_old(view, idx).bytes.to_vec(), p)),
                 _ => panic!("BUG: `ptr` should point on leaf node"),
             }
         } else {
@@ -176,6 +176,7 @@ where
     rt.realloc(&mut ptr);
 
     let mut split = leaf.insert::<T>(rt.reborrow(), ptr, meta.cast(), idx, &key)?;
+    rt.io.write(ptr, &leaf)?;
 
     while let Some(mut level) = stack.pop() {
         rt.realloc(&mut level.ptr);
@@ -279,7 +280,7 @@ pub fn print(view: &impl AbstractViewer, ptr: PagePtr<NodePage>) {
     ) {
         let page = view.page(ptr);
         let node_text = (0..(page.len() - usize::from(!page.is_leaf())))
-            .map(|idx| page.get_key(view, idx))
+            .map(|idx| page.get_key_old(view, idx))
             .map(|key| {
                 format!(
                     "{}:{}",

@@ -94,7 +94,7 @@ impl NodePage {
         self.keys_len[idx] as usize
     }
 
-    pub fn get_key<'c>(&self, view: &impl AbstractViewer, idx: usize) -> Key<'c> {
+    pub fn get_key_old<'c>(&self, view: &impl AbstractViewer, idx: usize) -> Key<'c> {
         let len = self.key_len(idx);
         let depth = len.div_ceil(0x10);
         // start with small allocation, optimistically assume the key is small
@@ -102,6 +102,27 @@ impl NodePage {
         for i in &self.key[..depth] {
             let ptr = i.expect("BUG key length inconsistent with key pages");
             let page = view.page(ptr);
+            v.extend_from_slice(&page.keys[idx]);
+        }
+        v.truncate(len);
+        Key {
+            table_id: self.table_id[idx],
+            bytes: Cow::Owned(v),
+        }
+    }
+
+    fn get_key<'c>(
+        &self,
+        rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+        idx: usize,
+    ) -> Key<'c> {
+        let len = self.key_len(idx);
+        let depth = len.div_ceil(0x10);
+        // start with small allocation, optimistically assume the key is small
+        let mut v = Vec::with_capacity(0x10 * 4);
+        for i in &self.key[..depth] {
+            let ptr = i.expect("BUG key length inconsistent with key pages");
+            let page = rt.look(ptr);
             v.extend_from_slice(&page.keys[idx]);
         }
         v.truncate(len);
@@ -176,11 +197,11 @@ impl NodePage {
 
     fn split(
         &mut self,
-        rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         this_ptr: PagePtr<NodePage>,
-    ) -> io::Result<(PagePtr<Self>, Self)> {
-        let new_ptr = rt.alloc.alloc();
-        let mut new = NodePage::empty();
+    ) -> io::Result<PagePtr<Self>> {
+        let new_ptr = rt.create();
+        let new = rt.mutate::<Self>(new_ptr);
         new.stem = self.stem;
         new.len = K as u16;
         self.len = K as u16;
@@ -195,24 +216,29 @@ impl NodePage {
         new.table_id[..K].clone_from_slice(&self.table_id[K..]);
         self.table_id[K..].iter_mut().for_each(|x| *x = 0);
 
-        let view = rt.io.read();
-        for (i, key_page_ptr) in self.key.iter().enumerate() {
-            if let Some(ptr) = key_page_ptr {
-                let mut key_page = *view.page(*ptr);
-                let new_right_ptr = rt.alloc.alloc();
-                new.key[i] = Some(new_right_ptr);
-                let mut new_page = KeyPage {
-                    keys: [[0; 0x10]; M],
-                };
-                new_page.keys[..K].clone_from_slice(&key_page.keys[K..]);
-                key_page.keys[K..].iter_mut().for_each(|x| *x = [0; 0x10]);
-                rt.io.write(new_right_ptr, &new_page)?;
+        let mut new_keys = [None; 0x40];
+        for (ptr, new) in self.key.iter().zip(new_keys.iter_mut()) {
+            let Some(ptr) = *ptr else {
+                break;
+            };
+            let new_page_ptr = rt.create();
 
-                rt.io.write(*ptr, &key_page)?;
-            }
+            let mut temp = [[0; 16]; K];
+            let key_page = rt.mutate(ptr);
+            key_page.keys[K..]
+                .iter_mut()
+                .zip(temp.iter_mut())
+                .for_each(|(from, to)| *to = mem::replace(from, [0; 0x10]));
+
+            let new_page = rt.mutate::<KeyPage>(new_page_ptr);
+            *new = Some(new_page_ptr);
+            new_page.keys[..K].clone_from_slice(&temp);
         }
 
-        Ok((new_ptr, new))
+        let new = rt.mutate::<Self>(new_ptr);
+        new.key = new_keys;
+
+        Ok(new_ptr)
     }
 
     pub fn insert<'c, T>(
@@ -226,6 +252,11 @@ impl NodePage {
     where
         T: PlainData,
     {
+        let view = rt.io.read();
+        for ptr in self.key.iter_mut().flatten() {
+            rt.read(&view, ptr);
+        }
+
         let old_len = self.len();
         self.len = (old_len + 1) as u16;
 
@@ -244,14 +275,11 @@ impl NodePage {
         self.insert_key(rt.reborrow(), idx, old_len, &key.bytes)?;
 
         if self.len() == M {
-            let (new_ptr, new) = self.split(rt.reborrow(), this_ptr)?;
-            rt.io.write(new_ptr, &new)?;
-            let key = self.get_key(&rt.io.read(), K - 1);
-            rt.io.write(this_ptr, &*self)?;
+            let new_ptr = self.split(rt.reborrow(), this_ptr)?;
+            let key = self.get_key(rt.reborrow(), K - 1);
 
             Ok(Some((key, new_ptr)))
         } else {
-            rt.io.write(this_ptr, &*self)?;
             Ok(None)
         }
     }
@@ -259,33 +287,22 @@ impl NodePage {
     // TODO: optimize
     fn insert_key(
         &mut self,
-        rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
         old_len: usize,
         key: &[u8],
     ) -> io::Result<()> {
-        let view = rt.io.read();
-        for ptr in self.key.iter_mut().flatten() {
-            let page = *view.page(*ptr);
-            rt.free.free(*ptr);
-            let new_ptr = rt.alloc.alloc();
-            *ptr = new_ptr;
-            rt.io.write(new_ptr, &page)?;
-        }
-
         let mut it = key.chunks(0x10);
         let mut depth = 0;
         loop {
-            let was_absent = self.key[depth].is_none();
             let chunk = it.next();
-            if was_absent && chunk.is_none() {
+            let absent = self.key[depth].is_none();
+            if absent && chunk.is_none() {
                 break;
             }
-            let ptr = *self.key[depth].get_or_insert_with(|| rt.alloc.alloc());
-            let mut page = *view.page(ptr);
-            if was_absent {
-                page.keys = [[0; 0x10]; M];
-            } else {
+            let ptr = *self.key[depth].get_or_insert_with(|| rt.create());
+            let page = rt.mutate(ptr);
+            if !absent {
                 for i in (idx..old_len).rev() {
                     page.keys[i + 1] = page.keys[i];
                 }
@@ -294,7 +311,6 @@ impl NodePage {
             if let Some(chunk) = chunk {
                 page.keys[idx][..chunk.len()].clone_from_slice(chunk);
             }
-            rt.io.write(ptr, &page)?;
 
             depth += 1;
         }
@@ -329,13 +345,12 @@ impl NodePage {
             let Some(ptr) = ptr else {
                 break;
             };
-            let mut page = *view.page(*ptr);
-            rt.realloc(ptr);
+            rt.read(&view, ptr);
+            let page = rt.mutate(*ptr);
             v.extend_from_slice(&page.keys[idx]);
             for i in idx..new_len {
                 page.keys[i] = page.keys[i + 1];
             }
-            rt.io.write(*ptr, &page)?;
         }
         v.truncate(old_key_len as usize);
 
@@ -346,6 +361,7 @@ impl NodePage {
         Ok(old_ptr.map(|ptr| (ptr.cast(), key)))
     }
 
+    #[allow(dead_code)]
     pub fn replace_key<'c, 'd>(&mut self, idx: usize, key: Key<'c>) -> Key<'d> {
         let _ = (idx, key);
         unimplemented!()

@@ -112,8 +112,15 @@ impl Db {
         let old_head = wal_lock.current_head();
         let (alloc, free) = wal_lock.cache_mut();
         let io = &self.file;
-        let rt = Rt { alloc, free, io };
-        let (new_head, ptr) = btree::insert(rt, old_head, key)?;
+        let mut storage = Default::default();
+        let mut rt = Rt {
+            alloc,
+            free,
+            io,
+            storage: &mut storage,
+        };
+        let (new_head, ptr) = btree::insert(rt.reborrow(), old_head, key)?;
+        rt.flush()?;
         wal_lock.new_head(&self.file, new_head)?;
 
         Ok(DbValue { ptr })
@@ -129,8 +136,15 @@ impl Db {
         let old_head = wal_lock.current_head();
         let (alloc, free) = wal_lock.cache_mut();
         let io = &self.file;
-        let rt = Rt { alloc, free, io };
-        let (new_head, ptr) = btree::remove(rt, old_head, key)?;
+        let mut storage = Default::default();
+        let mut rt = Rt {
+            alloc,
+            free,
+            io,
+            storage: &mut storage,
+        };
+        let (new_head, ptr) = btree::remove(rt.reborrow(), old_head, key)?;
+        rt.flush()?;
         wal_lock.new_head(&self.file, new_head)?;
 
         Ok(ptr.map(|ptr| DbValue { ptr }))
