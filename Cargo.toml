@@ -5,10 +5,15 @@ edition = "2021"
 description = "Minimalistic database"
 license = "MIT"
 
+[[bench]]
+name = "main"
+harness = false
+
 [dev-dependencies]
 env_logger = { version = "0.11.5" }
 tempdir = { version = "0.3.7" }
 rand = { version = "0.8.5" }
+criterion = { version = "0.5.1" }
 
 [dependencies]
 libc = { version = "0.2.167" }

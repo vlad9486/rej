@@ -78,9 +78,9 @@ unsafe impl PlainData for GenericPage {
 
 pub struct Rt<'a, A, F, Io> {
     pub alloc: &'a mut A,
-    pub free: &'a mut F,
+    free: &'a mut F,
     pub io: &'a Io,
-    pub storage: &'a mut BTreeMap<u32, Box<GenericPage>>,
+    storage: &'a mut BTreeMap<u32, Box<GenericPage>>,
 }
 
 impl<A, F, Io> Rt<'_, A, F, Io> {
@@ -94,11 +94,25 @@ impl<A, F, Io> Rt<'_, A, F, Io> {
     }
 }
 
-impl<A, F, Io> Rt<'_, A, F, Io>
+impl<'a, A, F, Io> Rt<'a, A, F, Io>
 where
     A: Alloc,
     F: Free,
 {
+    pub fn new(
+        alloc: &'a mut A,
+        free: &'a mut F,
+        io: &'a Io,
+        storage: &'a mut BTreeMap<u32, Box<GenericPage>>,
+    ) -> Self {
+        Rt {
+            alloc,
+            free,
+            io,
+            storage,
+        }
+    }
+
     pub fn realloc<T>(&mut self, ptr: &mut PagePtr<T>)
     where
         T: PlainData,
