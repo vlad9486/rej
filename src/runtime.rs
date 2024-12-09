@@ -159,18 +159,6 @@ where
         T::as_this_mut(bytes)
     }
 
-    pub fn look<T>(&self, ptr: PagePtr<T>) -> &T
-    where
-        T: PlainData,
-    {
-        let bytes = self
-            .storage
-            .get(&ptr.raw_number())
-            .expect("read or create before mutate")
-            .as_bytes();
-        T::as_this(bytes)
-    }
-
     pub fn flush(self) -> io::Result<()> {
         for (n, page) in self.storage {
             self.io.write(PagePtr::from_raw_number(*n), page.as_ref())?;
