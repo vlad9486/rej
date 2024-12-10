@@ -55,6 +55,7 @@ unsafe impl PlainData for KeyPage {
     const NAME: &str = "Key";
 }
 
+#[derive(Clone)]
 pub struct Key<'a> {
     pub table_id: u32,
     pub bytes: Cow<'a, [u8]>,
@@ -121,16 +122,13 @@ impl NodePage {
         rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
     ) -> Key<'c> {
-        let len = self.key_len(idx);
-        let depth = len.div_ceil(0x10);
         // start with small allocation, optimistically assume the key is small
         let mut v = Vec::with_capacity(0x10 * 4);
-        for i in &self.key[..depth] {
-            let ptr = i.expect("BUG key length inconsistent with key pages");
+        for ptr in self.keys_ptr() {
             let page = rt.look(ptr);
             v.extend_from_slice(&page.keys[idx]);
         }
-        v.truncate(len);
+        v.truncate(self.key_len(idx));
         Key {
             table_id: self.table_id[idx],
             bytes: Cow::Owned(v),
@@ -143,6 +141,13 @@ impl NodePage {
             false => ptr.map(Child::Node),
             true => ptr.map(PagePtr::cast).map(Child::Leaf),
         }
+    }
+
+    fn keys_ptr(&self) -> impl Iterator<Item = PagePtr<KeyPage>> {
+        self.key
+            .into_iter()
+            .take_while(Option::is_some)
+            .map(Option::unwrap)
     }
 
     // TODO: SIMD optimization
@@ -177,11 +182,7 @@ impl NodePage {
         extend_range(len, i, &mut range, |i| self.table_id[i] == key.table_id);
 
         let mut chunks = key.bytes.chunks(0x10);
-        let mut pointers = self
-            .key
-            .into_iter()
-            .take_while(Option::is_some)
-            .map(Option::unwrap);
+        let mut pointers = self.keys_ptr();
 
         for (ptr, chunk) in (&mut pointers).zip(&mut chunks) {
             let buffer = &view.page(ptr).keys;
@@ -294,7 +295,7 @@ impl NodePage {
         }
 
         self.child[idx] = Some(new_child_ptr);
-        if !self.is_leaf() && rev {
+        if rev {
             self.child.swap(idx, idx + 1);
         }
         self.keys_len[idx] = key.bytes.len() as u16;
@@ -368,12 +369,7 @@ impl NodePage {
 
         // start with small allocation, optimistically assume the key is small
         let mut v = Vec::with_capacity(0x10 * 4);
-        for ptr in self
-            .key
-            .into_iter()
-            .take_while(Option::is_some)
-            .map(Option::unwrap)
-        {
+        for ptr in self.keys_ptr() {
             let page = rt.mutate(ptr);
             v.extend_from_slice(&page.keys[idx]);
             for i in idx..new_len {
@@ -401,13 +397,7 @@ impl NodePage {
         let chunks = key.bytes.chunks(0x10);
 
         let mut v = Vec::with_capacity(0x10 * 4);
-        for (ptr, chunk) in self
-            .key
-            .into_iter()
-            .take_while(Option::is_some)
-            .map(Option::unwrap)
-            .zip(chunks)
-        {
+        for (ptr, chunk) in self.keys_ptr().zip(chunks) {
             let page = rt.mutate(ptr);
             v.extend_from_slice(&page.keys[idx]);
 
@@ -420,6 +410,51 @@ impl NodePage {
         Key {
             table_id: old_table_id,
             bytes: v.into(),
+        }
+    }
+
+    pub fn merge(
+        &mut self,
+        other: &Self,
+        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+        key: Key<'_>,
+        old: bool,
+    ) -> Key<'_> {
+        let new_len = self.len + other.len;
+        if !self.is_leaf() {
+            self.set_key(rt.reborrow(), self.len() - 1, key);
+        }
+        let (to, from) = if self.is_leaf() {
+            (self.len as usize..new_len as usize, 0..other.len as usize)
+        } else {
+            (self.len as usize..new_len as usize, 0..other.len as usize)
+        };
+        self.child[to.clone()].clone_from_slice(&other.child[from.clone()]);
+        // self.keys_len[to.clone()].clone_from_slice(&other.keys_len[from.clone()]);
+        // self.table_id[to.clone()].clone_from_slice(&other.table_id[from.clone()]);
+        // TODO: optimize
+        let mut last_key = None;
+        if old {
+            let view = rt.io.read();
+            for (to, from) in to.zip(from) {
+                let key = other.get_key_old(&view, from);
+                last_key = Some(key.clone());
+                self.set_key(rt.reborrow(), to, key);
+            }
+        } else {
+            for (to, from) in to.zip(from) {
+                let key = other.get_key(rt.reborrow(), from);
+                last_key = Some(key.clone());
+                self.set_key(rt.reborrow(), to, key);
+            }
+        }
+        self.len = new_len;
+        last_key.expect("loop must be not empty")
+    }
+
+    pub fn free(&self, rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>) {
+        for ptr in self.keys_ptr() {
+            rt.free.free(ptr);
         }
     }
 }

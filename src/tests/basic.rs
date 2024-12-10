@@ -1,31 +1,12 @@
 use std::iter;
 
-use tempdir::TempDir;
-use rand::{rngs::StdRng, SeedableRng};
+use rand::seq::SliceRandom;
 
-use crate::{Db, IoOptions};
-
-fn with_db<F, T>(seed: u64, f: F) -> T
-where
-    F: FnOnce(Db, &mut StdRng) -> T,
-{
-    let mut rng = StdRng::seed_from_u64(seed);
-
-    let dir = TempDir::new_in("target/tmp", "rej").unwrap();
-    let path = dir.path().join("test-insert");
-
-    let db = Db::new(&path, IoOptions::default()).unwrap();
-    drop(db);
-
-    let db = Db::new(&path, IoOptions::default()).unwrap();
-    f(db, &mut rng)
-}
+use super::with_db;
 
 #[test]
 fn keys() {
     with_db(0x123, |db, rng| {
-        use rand::seq::SliceRandom;
-
         let mut keys = (0..100)
             .map(|i| {
                 [0, 1]
@@ -38,9 +19,7 @@ fn keys() {
 
         keys.shuffle(rng);
         for key in &keys {
-            println!("{}", printer(key));
             db.insert(0, key).unwrap();
-            db.print(printer);
         }
 
         keys.shuffle(rng);
@@ -48,18 +27,35 @@ fn keys() {
             db.retrieve(0, key)
                 .unwrap_or_else(|| panic!("{}", printer(key)));
         }
+
+        keys.shuffle(rng);
+        for key in &keys {
+            db.remove(0, key).unwrap();
+        }
+        db.print(printer);
     })
 }
 
 #[test]
 fn remove_merge_with_right() {
     with_db(0x123, |db, _rng| {
-        for i in 0..9 {
+        for i in 0..8 {
             db.insert(5, &[i]).unwrap();
         }
+        db.print(|key| key[0]);
         db.remove(5, &[3]).unwrap();
         db.print(|key| key[0]);
-        db.remove(5, &[4]).unwrap();
+    })
+}
+
+#[test]
+fn remove_merge_with_left() {
+    with_db(0x123, |db, _rng| {
+        for i in 0..8 {
+            db.insert(5, &[i]).unwrap();
+        }
+        db.print(|key| key[0]);
+        db.remove(5, &[5]).unwrap();
         db.print(|key| key[0]);
     })
 }
@@ -71,7 +67,34 @@ fn remove_borrow() {
             db.insert(5, &[i]).unwrap();
         }
         db.remove(5, &[3]).unwrap();
+        db.print(|key| key[0]);
         db.insert(5, &[3]).unwrap();
+        db.print(|key| key[0]);
         db.remove(5, &[5]).unwrap();
+        db.print(|key| key[0]);
+    })
+}
+
+#[test]
+fn remove_all() {
+    with_db(0x123, |db, rng| {
+        let mut keys = (0..17).map(|i| vec![i]).collect::<Vec<_>>();
+        for key in &keys {
+            let value = db.insert(0, key).unwrap();
+            db.write(&value, 0, key).unwrap();
+        }
+        let printer = |key: &[u8]| key[0];
+        db.print(printer);
+
+        keys.shuffle(rng);
+        for key in &keys {
+            println!("{}", printer(key));
+            let value = db.remove(0, key).unwrap().unwrap_or_else(|| {
+                db.print(printer);
+                panic!();
+            });
+            assert_eq!(db.read_to_vec(&value), key.clone());
+            db.print(printer);
+        }
     })
 }

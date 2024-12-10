@@ -176,7 +176,7 @@ where
     rt.realloc(&mut ptr);
 
     leaf.realloc_keys(rt.reborrow());
-    let mut split = leaf.insert(rt.reborrow(), ptr, meta.cast(), idx, &key, true)?;
+    let mut split = leaf.insert(rt.reborrow(), ptr, meta.cast(), idx, &key, false)?;
     rt.io.write(ptr, &leaf)?;
 
     while let Some(mut level) = stack.pop() {
@@ -280,7 +280,7 @@ where
                             .node
                             .remove::<NodePage>(rt.reborrow(), 0, false)?
                             .expect("can donate");
-                        prev.insert(rt.reborrow(), ptr, donated_ptr, K - 1, &donated_key, true)?;
+                        prev.insert(rt.reborrow(), ptr, donated_ptr, K - 1, &donated_key, false)?;
                         rt.io.write(donor.ptr, &donor.node)?;
                         rt.io.write(ptr, &prev)?;
 
@@ -291,38 +291,55 @@ where
                     }
                 }
 
-                if let Some(neighbor) = left {
+                if let Some(mut neighbor) = left {
                     if right.as_ref().map_or(true, |r| r.gt(&neighbor)) {
-                        // TODO: merge with left
-                        println!("unimplemented merge with left");
-                        let _ = neighbor.ptr;
+                        log::debug!("merge left");
                         underflow = !level.node.can_donate();
+                        neighbor.node.realloc_keys(rt.reborrow());
+                        let (_, key) = level
+                            .node
+                            .remove::<NodePage>(rt.reborrow(), level.idx, false)?
+                            .expect("must be there");
+                        neighbor.node.merge(&prev, rt.reborrow(), key, false);
+                        prev.free(rt.reborrow());
+                        rt.free.free(ptr);
+                        ptr = neighbor.ptr;
+                        rt.io.write(neighbor.ptr, &neighbor.node)?;
+
                         break;
                     }
                 }
 
                 if let Some(neighbor) = right {
-                    let rev = level.idx == 0;
-                    let (this_ptr, _) = level
-                        .node
-                        .remove::<NodePage>(rt.reborrow(), level.idx, rev)?
-                        .expect("must be there");
-                    // assert_eq!(this_ptr, ptr);
-                    dbg!((this_ptr, ptr, level.idx));
-                    // TODO: merge with right
-                    println!("unimplemented merge with right");
-                    let _ = neighbor.ptr;
                     underflow = !level.node.can_donate();
+                    log::debug!("merge right");
+                    let (neighbor_ptr, key) = level
+                        .node
+                        .remove::<NodePage>(rt.reborrow(), level.idx + 1, false)?
+                        .expect("must be there");
+                    assert_eq!(neighbor_ptr, neighbor.ptr, "suppose to remove the neighbor");
+                    let last_key = prev.merge(&neighbor.node, rt.reborrow(), key, true);
+                    level.node.set_key(rt.reborrow(), level.idx, last_key);
+                    neighbor.node.free(rt.reborrow());
+                    rt.free.free(neighbor.ptr);
+                    rt.io.write(ptr, &prev)?;
+
                     break;
                 }
 
                 break;
             }
         }
-        level.node.child[level.idx] = Some(ptr);
-        rt.io.write(level.ptr, &level.node)?;
-        ptr = level.ptr;
-        prev = level.node;
+        if level.node.len() == 1 && !level.node.is_leaf() {
+            log::debug!("decrease height");
+            level.node.free(rt.reborrow());
+            rt.free.free(level.ptr);
+        } else {
+            level.node.child[level.idx] = Some(ptr);
+            rt.io.write(level.ptr, &level.node)?;
+            ptr = level.ptr;
+            prev = level.node;
+        }
     }
 
     Ok((ptr, Some(meta)))

@@ -66,7 +66,7 @@ pub trait AbstractIo {
 
 pub struct Rt<'a, A, F, Io> {
     pub alloc: &'a mut A,
-    free: &'a mut F,
+    pub free: &'a mut F,
     pub io: &'a Io,
     storage: &'a mut BTreeMap<u32, Vec<u8>>,
 }

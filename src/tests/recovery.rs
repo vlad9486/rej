@@ -2,7 +2,7 @@ use std::{fs, panic, path::Path};
 
 use tempdir::TempDir;
 
-use crate::{Db, DbError, DbIterator, DbStats, DbValue, IoOptions};
+use crate::{Db, DbError, DbIterator, DbStats, DbValue, IoOptions, wal::FreelistCache};
 
 fn populate(db: Db) -> Result<DbStats, DbError> {
     let data = |s| (s..128u8).collect::<Vec<u8>>();
@@ -37,7 +37,7 @@ fn check(db: Db) -> bool {
     let cnt = (&mut it).count();
     let stats = it.db.stats();
 
-    stats.cached == 399
+    stats.cached == FreelistCache::SIZE
         && (false
             || (cnt == 0 && stats.used == 1)
             || (cnt == 1 && stats.used == 3)

@@ -298,7 +298,10 @@ pub struct FreelistCache {
     pages: [Option<PagePtr<FreePage>>; CACHE_SIZE],
 }
 
-const CACHE_SIZE: usize = 0x18f;
+#[cfg(feature = "small")]
+pub const CACHE_SIZE: usize = 0x1cf;
+#[cfg(not(feature = "small"))]
+pub const CACHE_SIZE: usize = 0x18f;
 
 impl Alloc for FreelistCache {
     fn alloc<T>(&mut self) -> PagePtr<T>
@@ -328,7 +331,7 @@ impl Free for FreelistCache {
 }
 
 impl FreelistCache {
-    const SIZE: u32 = CACHE_SIZE as u32;
+    pub const SIZE: u32 = CACHE_SIZE as u32;
 
     const fn empty() -> Self {
         FreelistCache {
