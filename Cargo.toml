@@ -25,4 +25,5 @@ log = { version = "0.4.22" }
 memoffset = { version = "0.9.1" }
 
 [features]
+# default = ["small"]
 small = []

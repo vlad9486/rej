@@ -74,10 +74,15 @@ impl Db {
         page.data[..page.len].to_vec()
     }
 
-    pub fn print(&self) {
+    #[cfg(test)]
+    pub fn print<K, D>(&self, k: K)
+    where
+        K: Fn(&[u8]) -> D,
+        D: std::fmt::Display,
+    {
         let head_ptr = self.wal.lock().current_head();
         let view = self.file.read();
-        btree::print(&view, head_ptr);
+        btree::print(&view, head_ptr, k);
     }
 
     pub fn retrieve(&self, table_id: u32, key: &[u8]) -> Option<DbValue> {

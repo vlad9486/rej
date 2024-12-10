@@ -311,29 +311,32 @@ impl PartialOrd for NodeWithPtr {
 }
 
 // for debug
-pub fn print(view: &impl AbstractViewer, ptr: PagePtr<NodePage>) {
+#[cfg(test)]
+pub fn print<K, D>(view: &impl AbstractViewer, ptr: PagePtr<NodePage>, k: K)
+where
+    K: Fn(&[u8]) -> D,
+    D: std::fmt::Display,
+{
     // this is sad that I cannot debug B-Tree without using already existing B-Tree
     use std::collections::BTreeMap;
 
     let mut nodes = BTreeMap::new();
     let mut edges = Vec::new();
 
-    fn print_inner(
+    fn print_inner<K, D>(
         view: &impl AbstractViewer,
         ptr: PagePtr<NodePage>,
         nodes: &mut BTreeMap<u32, String>,
         edges: &mut Vec<(u32, u32)>,
-    ) {
+        k: &K,
+    ) where
+        K: Fn(&[u8]) -> D,
+        D: std::fmt::Display,
+    {
         let page = view.page(ptr);
         let node_text = (0..(page.len() - usize::from(!page.is_leaf())))
             .map(|idx| page.get_key_old(view, idx))
-            .map(|key| {
-                format!(
-                    "{}:{}",
-                    key.table_id,
-                    std::str::from_utf8(&key.bytes).unwrap()
-                )
-            })
+            .map(|key| format!("{}:{}", key.table_id, k(&key.bytes)))
             .collect::<Vec<_>>()
             .join("|");
         nodes.insert(ptr.raw_number(), format!("\"{node_text}\""));
@@ -341,12 +344,12 @@ pub fn print(view: &impl AbstractViewer, ptr: PagePtr<NodePage>) {
         for n in (0..page.len()).map(|idx| page.child[idx].unwrap()) {
             edges.push((ptr.raw_number(), n.raw_number()));
             if !page.is_leaf() {
-                print_inner(view, n, nodes, edges);
+                print_inner(view, n, nodes, edges, k);
             }
         }
     }
 
-    print_inner(view, ptr, &mut nodes, &mut edges);
+    print_inner(view, ptr, &mut nodes, &mut edges, &k);
 
     let edges = edges
         .into_iter()

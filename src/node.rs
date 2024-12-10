@@ -147,56 +147,78 @@ impl NodePage {
 
     // TODO: SIMD optimization
     pub fn search(&self, view: &impl AbstractViewer, key: &Key) -> Result<usize, usize> {
-        let mut depth = 0;
+        use std::ops::Range;
 
         let len = self.len() - usize::from(!self.is_leaf());
 
+        #[inline(always)]
+        fn extend_range<C>(len: usize, i: usize, range: &mut Range<usize>, cmp: C)
+        where
+            C: Fn(usize) -> bool,
+        {
+            let orig = range.clone();
+
+            *range = (range.start + i)..(range.start + i + 1);
+
+            while range.start > 0 && cmp(range.start - 1) {
+                range.start -= 1;
+            }
+
+            while range.end < len - 1 && cmp(range.end) {
+                range.end += 1;
+            }
+
+            range.start = range.start.max(orig.start);
+            range.end = range.end.min(orig.end);
+        }
+
         let i = self.table_id[..len].binary_search(&key.table_id)?;
-        let mut range = i..(i + 1);
+        let mut range = 0..len;
+        extend_range(len, i, &mut range, |i| self.table_id[i] == key.table_id);
 
-        while range.start > 0 && self.table_id[range.start - 1] == key.table_id {
-            range.start -= 1;
-        }
+        let mut chunks = key.bytes.chunks(0x10);
+        let mut pointers = self
+            .key
+            .into_iter()
+            .take_while(Option::is_some)
+            .map(Option::unwrap);
 
-        while range.end < len - 1 && self.table_id[range.end] == key.table_id {
-            range.end += 1;
-        }
+        for (ptr, chunk) in (&mut pointers).zip(&mut chunks) {
+            let buffer = &view.page(ptr).keys;
 
-        let mut key = key.bytes.as_ref();
-
-        while !key.is_empty() {
             let mut key_b = [0; 0x10];
-            let l = key.len().min(0x10);
-            key_b[..l].clone_from_slice(&key[..l]);
-            key = &key[l..];
-
-            let buffer = if let Some(ptr) = self.key[depth] {
-                &view.page(ptr).keys
-            } else {
-                break;
-            };
+            let l = chunk.len().min(0x10);
+            key_b[..l].clone_from_slice(&chunk[..l]);
 
             let i = buffer[range.clone()]
                 .binary_search(&key_b)
                 .map_err(|i| range.start + i)?;
 
-            range = (range.start + i)..(range.start + i + 1);
-
-            while range.start > 0 && buffer[range.start - 1] == key_b {
-                range.start -= 1;
-            }
-
-            while range.end < len - 1 && buffer[range.end] == key_b {
-                range.end += 1;
-            }
-
-            depth += 1;
+            extend_range(len, i, &mut range, |i| buffer[i] == key_b);
         }
 
-        if range.len() == 1 {
+        let original_len = key.bytes.len() as u16;
+        let i = self.keys_len[range.clone()]
+            .binary_search(&original_len)
+            .map_err(|i| range.start + i)?;
+
+        extend_range(len, i, &mut range, |i| self.keys_len[i] == original_len);
+
+        if chunks.next().is_some() {
+            Err(range.end)
+        } else if pointers.next().is_some() {
+            if range.len() == 1 {
+                Ok(range.start)
+            } else {
+                Err(range.start)
+            }
+        } else if range.len() == 1 {
             Ok(range.start)
         } else {
-            Err(range.start)
+            panic!(
+                "two identical keys detected {}",
+                std::str::from_utf8(&key.bytes).unwrap()
+            );
         }
     }
 

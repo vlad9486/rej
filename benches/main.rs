@@ -8,7 +8,7 @@ use tempdir::TempDir;
 use rej::{Db, IoOptions};
 
 fn insert(c: &mut Criterion) {
-    let dir = TempDir::new("rej").unwrap();
+    let dir = TempDir::new_in("target/tmp", "rej").unwrap();
     let path = dir.path().join("bench-insert");
 
     let db = Db::new(&path, IoOptions::default()).unwrap();
