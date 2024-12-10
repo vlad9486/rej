@@ -3,7 +3,7 @@ use std::io;
 use super::{
     page::{PagePtr, RawPtr},
     runtime::{PlainData, Alloc, Free, AbstractIo, AbstractViewer, Rt},
-    node::{NodePage, Child, Key, M},
+    node::{NodePage, Child, Key, M, K},
 };
 
 pub fn get<T>(
@@ -175,7 +175,8 @@ where
 
     rt.realloc(&mut ptr);
 
-    let mut split = leaf.insert::<T>(rt.reborrow(), ptr, meta.cast(), idx, &key)?;
+    leaf.realloc_keys(rt.reborrow());
+    let mut split = leaf.insert(rt.reborrow(), ptr, meta.cast(), idx, &key, true)?;
     rt.io.write(ptr, &leaf)?;
 
     while let Some(mut level) = stack.pop() {
@@ -183,8 +184,10 @@ where
 
         level.node.child[level.idx] = Some(ptr);
         if let Some((key, p)) = split {
-            let rt = rt.reborrow();
-            split = level.node.insert::<T>(rt, level.ptr, p, level.idx, &key)?;
+            level.node.realloc_keys(rt.reborrow());
+            split = level
+                .node
+                .insert(rt.reborrow(), level.ptr, p, level.idx, &key, true)?;
         }
 
         rt.io.write(level.ptr, &level.node)?;
@@ -196,7 +199,7 @@ where
 
         let mut root = NodePage::empty();
         root.append_child(ptr);
-        root.insert::<T>(rt.reborrow(), parent_ptr, p, 0, &key)?;
+        root.insert(rt.reborrow(), parent_ptr, p, 0, &key, true)?;
 
         rt.io.write(parent_ptr, &root)?;
         ptr = parent_ptr;
@@ -222,11 +225,15 @@ where
 
     rt.realloc(&mut ptr);
     let mut underflow = !leaf.can_donate();
-    let (meta, _) = leaf.remove(rt.reborrow(), idx)?.expect("just find");
+    leaf.realloc_keys(rt.reborrow());
+    let (meta, _) = leaf.remove(rt.reborrow(), idx, false)?.expect("just find");
     rt.io.write(ptr, &leaf)?;
+
+    let mut prev = leaf;
 
     let view = rt.io.read();
     while let Some(mut level) = stack.pop() {
+        level.node.realloc_keys(rt.reborrow());
         rt.realloc(&mut level.ptr);
         if underflow {
             let mut left = (level.idx > 0).then(|| {
@@ -245,43 +252,77 @@ where
                 })
                 .flatten();
 
-            if let Some(donor) = &mut left {
-                if donor.can_donate() && right.as_ref().map_or(true, |r| r.le(donor)) {
-                    // TODO: borrow from left
-                    let _ = donor.ptr;
-                    underflow = false;
-                    continue;
-                }
-            }
+            // for early return
+            loop {
+                if let Some(donor) = &mut left {
+                    if donor.can_donate() && right.as_ref().map_or(true, |r| r.le(donor)) {
+                        donor.node.realloc_keys(rt.reborrow());
+                        let (donated_ptr, donated_key) = donor
+                            .node
+                            .remove::<NodePage>(rt.reborrow(), donor.node.len() - 1, true)?
+                            .expect("can donate");
+                        prev.insert(rt.reborrow(), ptr, donated_ptr, 0, &donated_key, false)?;
+                        rt.io.write(donor.ptr, &donor.node)?;
+                        rt.io.write(ptr, &prev)?;
 
-            if let Some(donor) = &mut right {
-                if donor.can_donate() {
-                    // TODO: borrow from right
-                    let _ = donor.ptr;
-                    underflow = false;
-                    continue;
-                }
-            }
+                        let parent_key = donor.node.get_key(rt.reborrow(), donor.node.len() - 1);
+                        level.node.set_key(rt.reborrow(), level.idx - 1, parent_key);
 
-            if let Some(neighbor) = left {
-                if right.as_ref().map_or(true, |r| r.gt(&neighbor)) {
-                    // TODO: merge with left
+                        underflow = false;
+                        break;
+                    }
+                }
+
+                if let Some(donor) = &mut right {
+                    if donor.can_donate() {
+                        donor.node.realloc_keys(rt.reborrow());
+                        let (donated_ptr, donated_key) = donor
+                            .node
+                            .remove::<NodePage>(rt.reborrow(), 0, false)?
+                            .expect("can donate");
+                        prev.insert(rt.reborrow(), ptr, donated_ptr, K - 1, &donated_key, true)?;
+                        rt.io.write(donor.ptr, &donor.node)?;
+                        rt.io.write(ptr, &prev)?;
+
+                        level.node.set_key(rt.reborrow(), level.idx, donated_key);
+
+                        underflow = false;
+                        break;
+                    }
+                }
+
+                if let Some(neighbor) = left {
+                    if right.as_ref().map_or(true, |r| r.gt(&neighbor)) {
+                        // TODO: merge with left
+                        println!("unimplemented merge with left");
+                        let _ = neighbor.ptr;
+                        underflow = !level.node.can_donate();
+                        break;
+                    }
+                }
+
+                if let Some(neighbor) = right {
+                    let rev = level.idx == 0;
+                    let (this_ptr, _) = level
+                        .node
+                        .remove::<NodePage>(rt.reborrow(), level.idx, rev)?
+                        .expect("must be there");
+                    // assert_eq!(this_ptr, ptr);
+                    dbg!((this_ptr, ptr, level.idx));
+                    // TODO: merge with right
+                    println!("unimplemented merge with right");
                     let _ = neighbor.ptr;
                     underflow = !level.node.can_donate();
-                    continue;
+                    break;
                 }
-            }
 
-            if let Some(neighbor) = right {
-                // TODO: merge with right
-                let _ = neighbor.ptr;
-                underflow = !level.node.can_donate();
-                continue;
+                break;
             }
         }
         level.node.child[level.idx] = Some(ptr);
         rt.io.write(level.ptr, &level.node)?;
         ptr = level.ptr;
+        prev = level.node;
     }
 
     Ok((ptr, Some(meta)))

@@ -11,7 +11,7 @@ pub const M: usize = 0x8;
 #[cfg(not(feature = "small"))]
 pub const M: usize = 0x100;
 
-const K: usize = M / 2;
+pub const K: usize = M / 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -116,7 +116,7 @@ impl NodePage {
         }
     }
 
-    fn get_key<'c>(
+    pub fn get_key<'c>(
         &self,
         rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
@@ -268,22 +268,22 @@ impl NodePage {
         Ok(new_ptr)
     }
 
-    pub fn insert<'c, T>(
+    pub fn realloc_keys(&mut self, mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>) {
+        let view = rt.io.read();
+        for ptr in self.key.iter_mut().flatten() {
+            rt.read(&view, ptr);
+        }
+    }
+
+    pub fn insert<'c>(
         &mut self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         this_ptr: PagePtr<NodePage>,
         new_child_ptr: PagePtr<NodePage>,
         idx: usize,
         key: &Key,
-    ) -> io::Result<Option<(Key<'c>, PagePtr<NodePage>)>>
-    where
-        T: PlainData,
-    {
-        let view = rt.io.read();
-        for ptr in self.key.iter_mut().flatten() {
-            rt.read(&view, ptr);
-        }
-
+        rev: bool,
+    ) -> io::Result<Option<(Key<'c>, PagePtr<NodePage>)>> {
         let old_len = self.len();
         self.len = (old_len + 1) as u16;
 
@@ -294,7 +294,7 @@ impl NodePage {
         }
 
         self.child[idx] = Some(new_child_ptr);
-        if !self.is_leaf() {
+        if !self.is_leaf() && rev {
             self.child.swap(idx, idx + 1);
         }
         self.keys_len[idx] = key.bytes.len() as u16;
@@ -345,6 +345,7 @@ impl NodePage {
         &mut self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
+        rev: bool,
     ) -> io::Result<Option<(PagePtr<T>, Key<'c>)>> {
         let new_len = self.len() - 1;
         self.len = new_len as u16;
@@ -352,6 +353,10 @@ impl NodePage {
         let old_ptr = self.child[idx];
         let old_key_len = self.keys_len[idx];
         let old_table_id = self.table_id[idx];
+
+        if rev {
+            self.child.swap(idx, idx + 1);
+        }
 
         for i in idx..new_len {
             self.child[i] = self.child[i + 1];
@@ -363,13 +368,13 @@ impl NodePage {
 
         // start with small allocation, optimistically assume the key is small
         let mut v = Vec::with_capacity(0x10 * 4);
-        let view = rt.io.read();
-        for ptr in self.key.iter_mut() {
-            let Some(ptr) = ptr else {
-                break;
-            };
-            rt.read(&view, ptr);
-            let page = rt.mutate(*ptr);
+        for ptr in self
+            .key
+            .into_iter()
+            .take_while(Option::is_some)
+            .map(Option::unwrap)
+        {
+            let page = rt.mutate(ptr);
             v.extend_from_slice(&page.keys[idx]);
             for i in idx..new_len {
                 page.keys[i] = page.keys[i + 1];
@@ -384,9 +389,37 @@ impl NodePage {
         Ok(old_ptr.map(|ptr| (ptr.cast(), key)))
     }
 
-    #[allow(dead_code)]
-    pub fn replace_key<'d>(&mut self, idx: usize, key: Key<'_>) -> Key<'d> {
-        let _ = (idx, key);
-        unimplemented!()
+    pub fn set_key<'d>(
+        &mut self,
+        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+        idx: usize,
+        key: Key<'_>,
+    ) -> Key<'d> {
+        let old_key_len = mem::replace(&mut self.keys_len[idx], key.bytes.len() as u16);
+        let old_table_id = mem::replace(&mut self.table_id[idx], key.table_id);
+
+        let chunks = key.bytes.chunks(0x10);
+
+        let mut v = Vec::with_capacity(0x10 * 4);
+        for (ptr, chunk) in self
+            .key
+            .into_iter()
+            .take_while(Option::is_some)
+            .map(Option::unwrap)
+            .zip(chunks)
+        {
+            let page = rt.mutate(ptr);
+            v.extend_from_slice(&page.keys[idx]);
+
+            page.keys[idx] = [0; 0x10];
+            let l = chunk.len().min(0x10);
+            page.keys[idx][..l].clone_from_slice(&chunk[..l]);
+        }
+        v.truncate(old_key_len as usize);
+
+        Key {
+            table_id: old_table_id,
+            bytes: v.into(),
+        }
     }
 }

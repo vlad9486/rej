@@ -50,3 +50,28 @@ fn keys() {
         }
     })
 }
+
+#[test]
+fn remove_merge_with_right() {
+    with_db(0x123, |db, _rng| {
+        for i in 0..9 {
+            db.insert(5, &[i]).unwrap();
+        }
+        db.remove(5, &[3]).unwrap();
+        db.print(|key| key[0]);
+        db.remove(5, &[4]).unwrap();
+        db.print(|key| key[0]);
+    })
+}
+
+#[test]
+fn remove_borrow() {
+    with_db(0x123, |db, _rng| {
+        for i in 0..9 {
+            db.insert(5, &[i]).unwrap();
+        }
+        db.remove(5, &[3]).unwrap();
+        db.insert(5, &[3]).unwrap();
+        db.remove(5, &[5]).unwrap();
+    })
+}
