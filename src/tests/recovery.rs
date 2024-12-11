@@ -16,6 +16,7 @@ fn populate(db: Db) -> Result<DbStats, DbError> {
     Ok(db.stats())
 }
 
+// TODO: proper check
 fn check(db: Db) -> bool {
     struct It {
         inner: DbIterator,

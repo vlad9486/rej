@@ -1,4 +1,4 @@
-use std::{borrow::Cow, io, mem};
+use std::{borrow::Cow, mem};
 
 use super::{
     page::{PagePtr, RawPtr},
@@ -26,9 +26,6 @@ pub struct NodePage {
     // pointers to additional pages that stores keys
     // maximal key size is `0x40 * 0x10 = 1 kiB`
     key: [Option<PagePtr<KeyPage>>; 0x40],
-    // for fast iterating, only relevant for leaf nodes
-    pub next: Option<PagePtr<Self>>,
-    pub prev: Option<PagePtr<Self>>,
     // if stem is true than the node is root or branch
     // otherwise it is a leaf
     stem: u16,
@@ -68,8 +65,6 @@ impl NodePage {
             keys_len: [0; M],
             table_id: [0; M],
             key: [None; 64],
-            next: None,
-            prev: None,
             stem: 1,
             len: 0,
         }
@@ -96,12 +91,8 @@ impl NodePage {
         self.stem == 0
     }
 
-    pub fn key_len(&self, idx: usize) -> usize {
-        self.keys_len[idx] as usize
-    }
-
     pub fn get_key_old<'c>(&self, view: &impl AbstractViewer, idx: usize) -> Key<'c> {
-        let len = self.key_len(idx);
+        let len = self.keys_len[idx] as usize;
         let depth = len.div_ceil(0x10);
         // start with small allocation, optimistically assume the key is small
         let mut v = Vec::with_capacity(0x10 * 4);
@@ -128,7 +119,7 @@ impl NodePage {
             let page = rt.look(ptr);
             v.extend_from_slice(&page.keys[idx]);
         }
-        v.truncate(self.key_len(idx));
+        v.truncate(self.keys_len[idx] as usize);
         Key {
             table_id: self.table_id[idx],
             bytes: Cow::Owned(v),
@@ -223,19 +214,12 @@ impl NodePage {
         }
     }
 
-    fn split(
-        &mut self,
-        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-        this_ptr: PagePtr<NodePage>,
-    ) -> io::Result<PagePtr<Self>> {
+    fn split(&mut self, mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>) -> PagePtr<Self> {
         let new_ptr = rt.create();
         let new = rt.mutate::<Self>(new_ptr);
         new.stem = self.stem;
         new.len = K as u16;
         self.len = K as u16;
-
-        new.next = mem::replace(&mut self.next, Some(new_ptr));
-        new.prev = Some(this_ptr);
 
         new.child[..K].clone_from_slice(&self.child[K..]);
         self.child[K..].iter_mut().for_each(|x| *x = None);
@@ -263,10 +247,9 @@ impl NodePage {
             new_page.keys[..K].clone_from_slice(&temp);
         }
 
-        let new = rt.mutate::<Self>(new_ptr);
-        new.key = new_keys;
+        rt.mutate::<Self>(new_ptr).key = new_keys;
 
-        Ok(new_ptr)
+        new_ptr
     }
 
     pub fn realloc_keys(&mut self, mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>) {
@@ -279,12 +262,11 @@ impl NodePage {
     pub fn insert<'c>(
         &mut self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-        this_ptr: PagePtr<NodePage>,
         new_child_ptr: PagePtr<NodePage>,
         idx: usize,
         key: &Key,
         rev: bool,
-    ) -> io::Result<Option<(Key<'c>, PagePtr<NodePage>)>> {
+    ) -> Option<(Key<'c>, PagePtr<NodePage>)> {
         let old_len = self.len();
         self.len = (old_len + 1) as u16;
 
@@ -300,15 +282,15 @@ impl NodePage {
         }
         self.keys_len[idx] = key.bytes.len() as u16;
         self.table_id[idx] = key.table_id;
-        self.insert_key(rt.reborrow(), idx, old_len, &key.bytes)?;
+        self.insert_key(rt.reborrow(), idx, old_len, &key.bytes);
 
         if self.len() == M {
-            let new_ptr = self.split(rt.reborrow(), this_ptr)?;
+            let new_ptr = self.split(rt.reborrow());
             let key = self.get_key(rt.reborrow(), K - 1);
 
-            Ok(Some((key, new_ptr)))
+            Some((key, new_ptr))
         } else {
-            Ok(None)
+            None
         }
     }
 
@@ -318,7 +300,7 @@ impl NodePage {
         idx: usize,
         old_len: usize,
         key: &[u8],
-    ) -> io::Result<()> {
+    ) {
         let mut it = key.chunks(0x10);
         for ptr in &mut self.key {
             let chunk = it.next();
@@ -338,8 +320,6 @@ impl NodePage {
                 page.keys[idx][..chunk.len()].clone_from_slice(chunk);
             }
         }
-
-        Ok(())
     }
 
     pub fn remove<'c, T>(
@@ -347,7 +327,7 @@ impl NodePage {
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
         rev: bool,
-    ) -> io::Result<Option<(PagePtr<T>, Key<'c>)>> {
+    ) -> Option<(PagePtr<T>, Key<'c>)> {
         let new_len = self.len() - 1;
         self.len = new_len as u16;
 
@@ -382,7 +362,7 @@ impl NodePage {
             table_id: old_table_id,
             bytes: v.into(),
         };
-        Ok(old_ptr.map(|ptr| (ptr.cast(), key)))
+        old_ptr.map(|ptr| (ptr.cast(), key))
     }
 
     pub fn set_key<'d>(
@@ -424,11 +404,8 @@ impl NodePage {
         if !self.is_leaf() {
             self.set_key(rt.reborrow(), self.len() - 1, key);
         }
-        let (to, from) = if self.is_leaf() {
-            (self.len as usize..new_len as usize, 0..other.len as usize)
-        } else {
-            (self.len as usize..new_len as usize, 0..other.len as usize)
-        };
+        let to = (self.len as usize)..(new_len as usize);
+        let from = 0..(other.len as usize);
         self.child[to.clone()].clone_from_slice(&other.child[from.clone()]);
         // self.keys_len[to.clone()].clone_from_slice(&other.keys_len[from.clone()]);
         // self.table_id[to.clone()].clone_from_slice(&other.table_id[from.clone()]);

@@ -38,18 +38,18 @@ pub struct ItInner {
 impl ItInner {
     fn new(
         view: &impl AbstractViewer,
-        head_ptr: PagePtr<NodePage>,
+        mut ptr: PagePtr<NodePage>,
         forward: bool,
         table_id: u32,
         key: Option<&[u8]>,
     ) -> Option<Self> {
-        let mut ptr = head_ptr;
-        let mut node = view.page(ptr);
-        if node.is_empty() {
-            return None;
-        }
-
+        let mut node;
         loop {
+            node = view.page(ptr);
+            if node.is_empty() {
+                return None;
+            }
+
             // TODO: careful arithmetics
             let idx = key.map_or(usize::from(!forward) * node.len(), |key| {
                 let key = Key {
@@ -69,7 +69,6 @@ impl ItInner {
                     })
                 }
             }
-            node = view.page(ptr);
         }
     }
 }
@@ -95,9 +94,6 @@ impl It {
                 inner.idx += 1;
             } else if inner.idx != 0 {
                 inner.idx -= 1;
-            } else if let Some(ptr) = page.prev {
-                inner.ptr = ptr;
-                inner.idx = u16::MAX;
             } else {
                 self.0 = None;
             }
@@ -108,9 +104,6 @@ impl It {
         } else {
             if !inner.forward {
                 inner.idx = page.len() as u16 - 1;
-            } else if let Some(ptr) = page.next {
-                inner.ptr = ptr;
-                inner.idx = 0;
             } else {
                 self.0 = None;
             }
@@ -176,7 +169,7 @@ where
     rt.realloc(&mut ptr);
 
     leaf.realloc_keys(rt.reborrow());
-    let mut split = leaf.insert(rt.reborrow(), ptr, meta.cast(), idx, &key, false)?;
+    let mut split = leaf.insert(rt.reborrow(), meta.cast(), idx, &key, false);
     rt.io.write(ptr, &leaf)?;
 
     while let Some(mut level) = stack.pop() {
@@ -185,9 +178,7 @@ where
         level.node.child[level.idx] = Some(ptr);
         if let Some((key, p)) = split {
             level.node.realloc_keys(rt.reborrow());
-            split = level
-                .node
-                .insert(rt.reborrow(), level.ptr, p, level.idx, &key, true)?;
+            split = level.node.insert(rt.reborrow(), p, level.idx, &key, true);
         }
 
         rt.io.write(level.ptr, &level.node)?;
@@ -199,7 +190,7 @@ where
 
         let mut root = NodePage::empty();
         root.append_child(ptr);
-        root.insert(rt.reborrow(), parent_ptr, p, 0, &key, true)?;
+        root.insert(rt.reborrow(), p, 0, &key, true);
 
         rt.io.write(parent_ptr, &root)?;
         ptr = parent_ptr;
@@ -226,7 +217,7 @@ where
     rt.realloc(&mut ptr);
     let mut underflow = !leaf.can_donate();
     leaf.realloc_keys(rt.reborrow());
-    let (meta, _) = leaf.remove(rt.reborrow(), idx, false)?.expect("just find");
+    let (meta, _) = leaf.remove(rt.reborrow(), idx, false).expect("just find");
     rt.io.write(ptr, &leaf)?;
 
     let mut prev = leaf;
@@ -253,15 +244,16 @@ where
                 .flatten();
 
             // for early return
+            #[allow(clippy::never_loop)]
             loop {
                 if let Some(donor) = &mut left {
                     if donor.can_donate() && right.as_ref().map_or(true, |r| r.le(donor)) {
                         donor.node.realloc_keys(rt.reborrow());
                         let (donated_ptr, donated_key) = donor
                             .node
-                            .remove::<NodePage>(rt.reborrow(), donor.node.len() - 1, true)?
+                            .remove::<NodePage>(rt.reborrow(), donor.node.len() - 1, true)
                             .expect("can donate");
-                        prev.insert(rt.reborrow(), ptr, donated_ptr, 0, &donated_key, false)?;
+                        prev.insert(rt.reborrow(), donated_ptr, 0, &donated_key, false);
                         rt.io.write(donor.ptr, &donor.node)?;
                         rt.io.write(ptr, &prev)?;
 
@@ -278,9 +270,9 @@ where
                         donor.node.realloc_keys(rt.reborrow());
                         let (donated_ptr, donated_key) = donor
                             .node
-                            .remove::<NodePage>(rt.reborrow(), 0, false)?
+                            .remove::<NodePage>(rt.reborrow(), 0, false)
                             .expect("can donate");
-                        prev.insert(rt.reborrow(), ptr, donated_ptr, K - 1, &donated_key, false)?;
+                        prev.insert(rt.reborrow(), donated_ptr, K - 1, &donated_key, false);
                         rt.io.write(donor.ptr, &donor.node)?;
                         rt.io.write(ptr, &prev)?;
 
@@ -298,7 +290,7 @@ where
                         neighbor.node.realloc_keys(rt.reborrow());
                         let (_, key) = level
                             .node
-                            .remove::<NodePage>(rt.reborrow(), level.idx, false)?
+                            .remove::<NodePage>(rt.reborrow(), level.idx, false)
                             .expect("must be there");
                         neighbor.node.merge(&prev, rt.reborrow(), key, false);
                         prev.free(rt.reborrow());
@@ -315,7 +307,7 @@ where
                     log::debug!("merge right");
                     let (neighbor_ptr, key) = level
                         .node
-                        .remove::<NodePage>(rt.reborrow(), level.idx + 1, false)?
+                        .remove::<NodePage>(rt.reborrow(), level.idx + 1, false)
                         .expect("must be there");
                     assert_eq!(neighbor_ptr, neighbor.ptr, "suppose to remove the neighbor");
                     let last_key = prev.merge(&neighbor.node, rt.reborrow(), key, true);

@@ -10,7 +10,6 @@ ACID is not tested well.
 
 ## TODO:
 
-* B-Tree: fix the table scanning.
 * Allocate/deallocate space for the data in the dedicated WAL entry.
 * Full encryption (Adiantum).
 * More tests.
@@ -18,5 +17,6 @@ ACID is not tested well.
 
 ### Difficult
 
+* B-Tree: implement table scanning.
 * Extent allocation -> Unlimited value;
 * Better parallelism.
