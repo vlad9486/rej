@@ -15,18 +15,20 @@ fn main() {
     let data = |s| (s..128u8).collect::<Vec<u8>>();
 
     log::info!("{:?}", db.stats());
-    let v = db.insert(0, b"some key 1, long").unwrap();
-    db.write(&v, &data(10)).unwrap();
+    let value = db.allocate().unwrap();
+    db.insert(&value, 0, b"some key 1, long").unwrap();
+    db.write(&value, &data(10)).unwrap();
 
     log::info!("{:?}", db.stats());
-    let v = db
-        .insert(0, b"some key 6, too                long")
+    let value = db.allocate().unwrap();
+    db.insert(&value, 0, b"some key 6, too                long")
         .unwrap();
-    db.write(&v, &data(60)).unwrap();
+    db.write(&value, &data(60)).unwrap();
 
     log::info!("{:?}", db.stats());
-    let v = db.insert(0, b"some key 3").unwrap();
-    db.write(&v, &data(30)).unwrap();
+    let value = db.allocate().unwrap();
+    db.insert(&value, 0, b"some key 3").unwrap();
+    db.write(&value, &data(30)).unwrap();
 
     log::info!("{:?}", db.stats());
 

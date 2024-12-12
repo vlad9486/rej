@@ -150,19 +150,18 @@ fn walk(
 pub fn insert(
     mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
     root: PagePtr<NodePage>,
+    meta: PagePtr<MetadataPage>,
     key: Key<'_>,
-) -> io::Result<(PagePtr<NodePage>, PagePtr<MetadataPage>)> {
+) -> io::Result<(PagePtr<NodePage>, Option<PagePtr<MetadataPage>>)> {
     let (mut ptr, mut leaf, mut stack, res) = walk(&rt.io.read(), root, &key);
 
     let idx = match res {
         Ok(idx) => {
             let meta = leaf.child[idx].expect("must be here, just find").cast();
-            return Ok((root, meta));
+            return Ok((root, Some(meta)));
         }
         Err(idx) => idx,
     };
-
-    let meta = rt.alloc.alloc();
 
     rt.realloc(&mut ptr);
 
@@ -194,7 +193,7 @@ pub fn insert(
         ptr = parent_ptr;
     }
 
-    Ok((ptr, meta))
+    Ok((ptr, None))
 }
 
 pub fn remove(

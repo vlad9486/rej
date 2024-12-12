@@ -31,7 +31,8 @@ fn insert(c: &mut Criterion) {
             let mut key = *b"key key key asd asd asd     ";
             for i in &indexes {
                 key[24..26].clone_from_slice(&i.to_le_bytes());
-                db.insert(0, &key).unwrap();
+                let value = db.allocate().unwrap();
+                db.insert(&value, 0, &key).unwrap();
             }
             for i in 0..NUM {
                 key[24..26].clone_from_slice(&i.to_le_bytes());

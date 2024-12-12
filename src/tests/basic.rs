@@ -19,7 +19,8 @@ fn keys() {
 
         keys.shuffle(rng);
         for key in &keys {
-            db.insert(0, key).unwrap();
+            let value = db.allocate().unwrap();
+            db.insert(&value, 0, key).unwrap();
         }
 
         keys.shuffle(rng);
@@ -30,7 +31,13 @@ fn keys() {
 
         keys.shuffle(rng);
         for key in &keys {
-            db.remove(0, key).unwrap();
+            // db.print(printer);
+            let value = db.remove(0, key).unwrap().unwrap_or_else(|| {
+                panic!("{}", printer(key));
+            });
+
+            // println!("ok {}", printer(key));
+            db.deallocate(value).unwrap();
         }
         db.print(printer);
     })
@@ -40,7 +47,8 @@ fn keys() {
 fn remove_merge_with_right() {
     with_db(0x123, |db, _rng| {
         for i in 0..8 {
-            db.insert(5, &[i]).unwrap();
+            let value = db.allocate().unwrap();
+            db.insert(&value, 5, &[i]).unwrap();
         }
         db.print(|key| key[0]);
         db.remove(5, &[3]).unwrap();
@@ -52,7 +60,8 @@ fn remove_merge_with_right() {
 fn remove_merge_with_left() {
     with_db(0x123, |db, _rng| {
         for i in 0..8 {
-            db.insert(5, &[i]).unwrap();
+            let value = db.allocate().unwrap();
+            db.insert(&value, 5, &[i]).unwrap();
         }
         db.print(|key| key[0]);
         db.remove(5, &[5]).unwrap();
@@ -64,11 +73,12 @@ fn remove_merge_with_left() {
 fn remove_borrow() {
     with_db(0x123, |db, _rng| {
         for i in 0..9 {
-            db.insert(5, &[i]).unwrap();
+            let value = db.allocate().unwrap();
+            db.insert(&value, 5, &[i]).unwrap();
         }
-        db.remove(5, &[3]).unwrap();
+        let value = db.remove(5, &[3]).unwrap().unwrap();
         db.print(|key| key[0]);
-        db.insert(5, &[3]).unwrap();
+        db.insert(&value, 5, &[3]).unwrap();
         db.print(|key| key[0]);
         db.remove(5, &[5]).unwrap();
         db.print(|key| key[0]);
@@ -80,7 +90,8 @@ fn remove_all() {
     with_db(0x123, |db, rng| {
         let mut keys = (0..17).map(|i| vec![i]).collect::<Vec<_>>();
         for key in &keys {
-            let value = db.insert(0, key).unwrap();
+            let value = db.allocate().unwrap();
+            db.insert(&value, 0, key).unwrap();
             db.write(&value, key).unwrap();
         }
         let printer = |key: &[u8]| key[0];

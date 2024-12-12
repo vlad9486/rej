@@ -174,7 +174,7 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    fn fill_cache(&mut self, file: &FileIo) -> Result<(), WalError> {
+    pub fn fill_cache(&mut self, file: &FileIo) -> Result<(), WalError> {
         log::debug!(
             "fill cache, will allocate {} pages",
             self.0.cache.capacity()
@@ -212,7 +212,7 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    fn collect_garbage(&mut self, file: &FileIo) -> Result<(), WalError> {
+    pub fn collect_garbage(&mut self, file: &FileIo) -> Result<(), WalError> {
         log::debug!("collect garbage, will free {} pages", self.0.garbage.len());
 
         let mut freelist = self.0.freelist;

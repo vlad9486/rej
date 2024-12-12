@@ -11,7 +11,8 @@ fn big() {
         indexes.shuffle(rng);
         for i in &indexes {
             let key = format!("key                  {i:03}");
-            let value = db.insert(0, key.as_bytes()).unwrap();
+            let value = db.allocate().unwrap();
+            db.insert(&value, 0, key.as_bytes()).unwrap();
             db.write(&value, &i.to_le_bytes()).unwrap();
         }
 
@@ -33,6 +34,7 @@ fn big() {
             println!("deleted {key}");
             assert_eq!(db.read_to_vec(&value), &i.to_le_bytes());
             assert!(db.retrieve(0, key.as_bytes()).is_none());
+            db.deallocate(value).unwrap();
         }
     })
 }

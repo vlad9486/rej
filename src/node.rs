@@ -416,13 +416,17 @@ impl NodePage {
             let view = rt.io.read();
             for (to, from) in to.zip(from) {
                 let key = other.get_key_old(&view, from);
-                last_key = Some(key.clone());
+                if !key.bytes.is_empty() {
+                    last_key = Some(key.clone());
+                }
                 self.set_key(rt.reborrow(), to, key);
             }
         } else {
             for (to, from) in to.zip(from) {
                 let key = other.get_key(rt.reborrow(), from);
-                last_key = Some(key.clone());
+                if !key.bytes.is_empty() {
+                    last_key = Some(key.clone());
+                }
                 self.set_key(rt.reborrow(), to, key);
             }
         }

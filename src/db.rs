@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::{
     page::PagePtr,
-    runtime::{AbstractIo, AbstractViewer, Rt},
+    runtime::{AbstractIo, AbstractViewer, Rt, Alloc, Free},
     file::{FileIo, IoOptions},
     btree,
     node::Key,
@@ -39,6 +39,22 @@ impl Db {
         let wal = Wal::new(create, &file)?;
 
         Ok(Db { file, wal })
+    }
+
+    pub fn allocate(&self) -> Result<DbValue, DbError> {
+        let mut wal_lock = self.wal.lock();
+        let (alloc, _) = wal_lock.cache_mut();
+        let ptr = alloc.alloc();
+        wal_lock.fill_cache(&self.file)?;
+
+        Ok(DbValue { ptr })
+    }
+
+    pub fn deallocate(&self, value: DbValue) -> Result<(), WalError> {
+        let mut wal_lock = self.wal.lock();
+        let (_, free) = wal_lock.cache_mut();
+        free.free(value.ptr);
+        wal_lock.collect_garbage(&self.file)
     }
 
     /// # Panics
@@ -101,7 +117,12 @@ impl Db {
             .map(|(key, ptr)| (key, DbValue { ptr }))
     }
 
-    pub fn insert(&self, table_id: u32, key: &[u8]) -> Result<DbValue, DbError> {
+    pub fn insert(
+        &self,
+        value: &DbValue,
+        table_id: u32,
+        key: &[u8],
+    ) -> Result<Option<DbValue>, DbError> {
         let key = Key {
             table_id,
             bytes: key.into(),
@@ -113,11 +134,11 @@ impl Db {
         let io = &self.file;
         let mut storage = Default::default();
         let mut rt = Rt::new(alloc, free, io, &mut storage);
-        let (new_head, ptr) = btree::insert(rt.reborrow(), old_head, key)?;
+        let (new_head, old) = btree::insert(rt.reborrow(), old_head, value.ptr, key)?;
         rt.flush()?;
         wal_lock.new_head(&self.file, new_head)?;
 
-        Ok(DbValue { ptr })
+        Ok(old.map(|ptr| DbValue { ptr }))
     }
 
     pub fn remove(&self, table_id: u32, key: &[u8]) -> Result<Option<DbValue>, DbError> {
