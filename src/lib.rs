@@ -10,9 +10,9 @@ mod runtime;
 mod file;
 mod wal;
 
+mod value;
 mod node;
 mod btree;
-mod value;
 mod db;
 
 #[cfg(test)]

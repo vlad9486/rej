@@ -9,12 +9,12 @@ use super::{
     btree,
     node::Key,
     wal::{Wal, WalError, DbStats},
-    value::DataPage,
+    value::MetadataPage,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DbValue {
-    ptr: PagePtr<DataPage>,
+    ptr: PagePtr<MetadataPage>,
 }
 
 pub struct DbIterator(btree::It);
@@ -42,36 +42,30 @@ impl Db {
     }
 
     /// # Panics
-    /// if offset plus buf length is bigger than `DataPage::CAPACITY`
+    /// if buf length is bigger than `DataPage::CAPACITY`
     /// unlimited value size is not implemented yet
-    pub fn write(&self, value: &DbValue, offset: usize, buf: &[u8]) -> io::Result<()> {
-        let mut page = DataPage {
-            len: buf.len(),
-            data: [0; DataPage::CAPACITY],
-        };
-        page.data[offset..][..buf.len()].clone_from_slice(buf);
-        let page_offset = memoffset::offset_of!(DataPage, data) + offset;
-        self.file
-            .write_range(value.ptr, &page, 0..(page_offset + buf.len()))
+    pub fn write(&self, value: &DbValue, buf: &[u8]) -> io::Result<()> {
+        let mut page = MetadataPage::empty();
+        let len = page.put_data(buf);
+        self.file.write_range(value.ptr, &page, 0..len)
     }
 
     pub fn length(&self, value: &DbValue) -> usize {
-        self.file.read().page(value.ptr).len
+        self.file.read().page(value.ptr).len()
     }
 
     /// # Panics
     /// if offset plus buf length is smaller than the value size
     pub fn read(&self, value: &DbValue, offset: usize, buf: &mut [u8]) {
-        let view = self.file.read();
-        let page = view.page(value.ptr);
-        let data = &page.data[..page.len][offset..][..buf.len()];
-        buf.clone_from_slice(data);
+        self.file.read().page(value.ptr).read(offset, buf);
     }
 
     pub fn read_to_vec(&self, value: &DbValue) -> Vec<u8> {
         let view = self.file.read();
-        let page = view.page(value.ptr);
-        page.data[..page.len].to_vec()
+        let value = view.page(value.ptr);
+        let mut buf = vec![0; value.len()];
+        value.read(0, &mut buf);
+        buf
     }
 
     #[cfg(test)]

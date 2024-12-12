@@ -81,7 +81,7 @@ fn remove_all() {
         let mut keys = (0..17).map(|i| vec![i]).collect::<Vec<_>>();
         for key in &keys {
             let value = db.insert(0, key).unwrap();
-            db.write(&value, 0, key).unwrap();
+            db.write(&value, key).unwrap();
         }
         let printer = |key: &[u8]| key[0];
         db.print(printer);

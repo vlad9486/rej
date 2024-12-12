@@ -1,8 +1,6 @@
 use std::{collections::BTreeMap, io, mem, slice};
 
-use crate::page::RawPtr;
-
-use super::page::PagePtr;
+use super::page::{PagePtr, RawPtr, PAGE_SIZE};
 
 /// # Safety
 /// `Self` must:
@@ -28,6 +26,10 @@ where
     fn as_this_mut(slice: &mut [u8]) -> &mut Self {
         unsafe { &mut *slice.as_mut_ptr().cast::<Self>() }
     }
+}
+
+unsafe impl PlainData for [u8; PAGE_SIZE as usize] {
+    const NAME: &str = "PlainData";
 }
 
 pub trait Alloc {

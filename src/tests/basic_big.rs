@@ -12,7 +12,7 @@ fn big() {
         for i in &indexes {
             let key = format!("key                  {i:03}");
             let value = db.insert(0, key.as_bytes()).unwrap();
-            db.write(&value, 0, &i.to_le_bytes()).unwrap();
+            db.write(&value, &i.to_le_bytes()).unwrap();
         }
 
         for i in 0..NUM {

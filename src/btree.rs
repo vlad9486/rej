@@ -2,15 +2,16 @@ use std::io;
 
 use super::{
     page::{PagePtr, RawPtr},
-    runtime::{PlainData, Alloc, Free, AbstractIo, AbstractViewer, Rt},
+    runtime::{Alloc, Free, AbstractIo, AbstractViewer, Rt},
+    value::MetadataPage,
     node::{NodePage, Child, Key, M, K},
 };
 
-pub fn get<T>(
+pub fn get(
     view: &impl AbstractViewer,
     mut ptr: PagePtr<NodePage>,
     key: Key<'_>,
-) -> Option<PagePtr<T>> {
+) -> Option<PagePtr<MetadataPage>> {
     loop {
         let node = view.page(ptr);
         let idx = node
@@ -59,7 +60,7 @@ impl ItInner {
 
                 node.search(view, &key).unwrap_or_else(|idx| idx)
             }) - usize::from(!forward);
-            match node.get_child::<()>(idx)? {
+            match node.get_child(idx)? {
                 Child::Node(p) => ptr = p,
                 Child::Leaf(_) => {
                     return Some(ItInner {
@@ -84,7 +85,7 @@ impl It {
         Self(ItInner::new(view, head_ptr, forward, table_id, key))
     }
 
-    pub fn next<T>(&mut self, view: &impl AbstractViewer) -> Option<(Vec<u8>, PagePtr<T>)> {
+    pub fn next(&mut self, view: &impl AbstractViewer) -> Option<(Vec<u8>, PagePtr<MetadataPage>)> {
         let inner = self.0.as_mut()?;
 
         let idx = usize::from(inner.idx);
@@ -146,14 +147,11 @@ fn walk(
     (ptr, leaf, stack, idx)
 }
 
-pub fn insert<T>(
+pub fn insert(
     mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
     root: PagePtr<NodePage>,
     key: Key<'_>,
-) -> io::Result<(PagePtr<NodePage>, PagePtr<T>)>
-where
-    T: PlainData,
-{
+) -> io::Result<(PagePtr<NodePage>, PagePtr<MetadataPage>)> {
     let (mut ptr, mut leaf, mut stack, res) = walk(&rt.io.read(), root, &key);
 
     let idx = match res {
@@ -199,14 +197,11 @@ where
     Ok((ptr, meta))
 }
 
-pub fn remove<T>(
+pub fn remove(
     mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
     root: PagePtr<NodePage>,
     key: Key<'_>,
-) -> io::Result<(PagePtr<NodePage>, Option<PagePtr<T>>)>
-where
-    T: PlainData,
-{
+) -> io::Result<(PagePtr<NodePage>, Option<PagePtr<MetadataPage>>)> {
     let (mut ptr, mut leaf, mut stack, res) = walk(&rt.io.read(), root, &key);
 
     let idx = match res {
@@ -218,6 +213,7 @@ where
     let mut underflow = !leaf.can_donate();
     leaf.realloc_keys(rt.reborrow());
     let (meta, _) = leaf.remove(rt.reborrow(), idx, false).expect("just find");
+    let meta = meta.cast(); // the leaf contains node nodes, but metadata pages
     rt.io.write(ptr, &leaf)?;
 
     let mut prev = leaf;
@@ -251,7 +247,7 @@ where
                         donor.node.realloc_keys(rt.reborrow());
                         let (donated_ptr, donated_key) = donor
                             .node
-                            .remove::<NodePage>(rt.reborrow(), donor.node.len() - 1, true)
+                            .remove(rt.reborrow(), donor.node.len() - 1, true)
                             .expect("can donate");
                         prev.insert(rt.reborrow(), donated_ptr, 0, &donated_key, false);
                         rt.io.write(donor.ptr, &donor.node)?;
@@ -270,7 +266,7 @@ where
                         donor.node.realloc_keys(rt.reborrow());
                         let (donated_ptr, donated_key) = donor
                             .node
-                            .remove::<NodePage>(rt.reborrow(), 0, false)
+                            .remove(rt.reborrow(), 0, false)
                             .expect("can donate");
                         prev.insert(rt.reborrow(), donated_ptr, K - 1, &donated_key, false);
                         rt.io.write(donor.ptr, &donor.node)?;
@@ -290,7 +286,7 @@ where
                         neighbor.node.realloc_keys(rt.reborrow());
                         let (_, key) = level
                             .node
-                            .remove::<NodePage>(rt.reborrow(), level.idx, false)
+                            .remove(rt.reborrow(), level.idx, false)
                             .expect("must be there");
                         neighbor.node.merge(&prev, rt.reborrow(), key, false);
                         prev.free(rt.reborrow());
@@ -307,7 +303,7 @@ where
                     log::debug!("merge right");
                     let (neighbor_ptr, key) = level
                         .node
-                        .remove::<NodePage>(rt.reborrow(), level.idx + 1, false)
+                        .remove(rt.reborrow(), level.idx + 1, false)
                         .expect("must be there");
                     assert_eq!(neighbor_ptr, neighbor.ptr, "suppose to remove the neighbor");
                     let last_key = prev.merge(&neighbor.node, rt.reborrow(), key, true);

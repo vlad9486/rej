@@ -16,17 +16,17 @@ fn main() {
 
     log::info!("{:?}", db.stats());
     let v = db.insert(0, b"some key 1, long").unwrap();
-    db.write(&v, 0, &data(10)).unwrap();
+    db.write(&v, &data(10)).unwrap();
 
     log::info!("{:?}", db.stats());
     let v = db
         .insert(0, b"some key 6, too                long")
         .unwrap();
-    db.write(&v, 0, &data(60)).unwrap();
+    db.write(&v, &data(60)).unwrap();
 
     log::info!("{:?}", db.stats());
     let v = db.insert(0, b"some key 3").unwrap();
-    db.write(&v, 0, &data(30)).unwrap();
+    db.write(&v, &data(30)).unwrap();
 
     log::info!("{:?}", db.stats());
 

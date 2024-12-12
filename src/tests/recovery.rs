@@ -7,11 +7,11 @@ use crate::{Db, DbError, DbIterator, DbStats, DbValue, IoOptions, wal::FreelistC
 fn populate(db: Db) -> Result<DbStats, DbError> {
     let data = |s| (s..128u8).collect::<Vec<u8>>();
     let v = db.insert(0, b"some key 1, long")?;
-    db.write(&v, 0, &data(10))?;
+    db.write(&v, &data(10))?;
     let v = db.insert(0, b"some key 6, too                long")?;
-    db.write(&v, 0, &data(60))?;
+    db.write(&v, &data(60))?;
     let v = db.insert(0, b"some key 3")?;
-    db.write(&v, 0, &data(30))?;
+    db.write(&v, &data(30))?;
 
     Ok(db.stats())
 }
