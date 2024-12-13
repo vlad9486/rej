@@ -90,9 +90,14 @@ impl Db {
         K: Fn(&[u8]) -> D,
         D: std::fmt::Display,
     {
-        let head_ptr = self.wal.lock().current_head();
-        let view = self.file.read();
-        btree::print(&view, head_ptr, k);
+        let mut wal_lock = self.wal.lock();
+        let old_head = wal_lock.current_head();
+        let (alloc, free) = wal_lock.cache_mut();
+        let io = &self.file;
+        let mut storage = Default::default();
+        let rt = Rt::new(alloc, free, io, &mut storage);
+
+        btree::print(rt, old_head, k, true);
     }
 
     pub fn retrieve(&self, table_id: u32, key: &[u8]) -> Option<DbValue> {

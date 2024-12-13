@@ -51,7 +51,6 @@ impl ItInner {
                 return None;
             }
 
-            // TODO: careful arithmetics
             let idx = key.map_or(usize::from(!forward) * node.len(), |key| {
                 let key = Key {
                     table_id,
@@ -85,6 +84,7 @@ impl It {
         Self(ItInner::new(view, head_ptr, forward, table_id, key))
     }
 
+    // TODO: proper scanning
     pub fn next(&mut self, view: &impl AbstractViewer) -> Option<(Vec<u8>, PagePtr<MetadataPage>)> {
         let inner = self.0.as_mut()?;
 
@@ -219,9 +219,10 @@ pub fn remove(
 
     let view = rt.io.read();
     while let Some(mut level) = stack.pop() {
-        level.node.realloc_keys(rt.reborrow());
         rt.realloc(&mut level.ptr);
         if underflow {
+            level.node.realloc_keys(rt.reborrow());
+
             let mut left = (level.idx > 0).then(|| {
                 let ptr = level.node.child[level.idx - 1].expect("left neighbor always present");
                 NodeWithPtr {
@@ -243,6 +244,9 @@ pub fn remove(
             loop {
                 if let Some(donor) = &mut left {
                     if donor.can_donate() && right.as_ref().map_or(true, |r| r.le(donor)) {
+                        log::debug!("donate left");
+
+                        rt.realloc(&mut donor.ptr);
                         donor.node.realloc_keys(rt.reborrow());
                         let (donated_ptr, donated_key) = donor
                             .node
@@ -251,6 +255,8 @@ pub fn remove(
                         prev.insert(rt.reborrow(), donated_ptr, 0, &donated_key, false);
                         rt.io.write(donor.ptr, &donor.node)?;
                         rt.io.write(ptr, &prev)?;
+
+                        level.node.child[level.idx - 1] = Some(donor.ptr);
 
                         let parent_key = donor.node.get_key(rt.reborrow(), donor.node.len() - 1);
                         level.node.set_key(rt.reborrow(), level.idx - 1, parent_key);
@@ -262,6 +268,9 @@ pub fn remove(
 
                 if let Some(donor) = &mut right {
                     if donor.can_donate() {
+                        log::debug!("donate right");
+
+                        rt.realloc(&mut donor.ptr);
                         donor.node.realloc_keys(rt.reborrow());
                         let (donated_ptr, donated_key) = donor
                             .node
@@ -271,6 +280,8 @@ pub fn remove(
                         rt.io.write(donor.ptr, &donor.node)?;
                         rt.io.write(ptr, &prev)?;
 
+                        level.node.child[level.idx + 1] = Some(donor.ptr);
+
                         level.node.set_key(rt.reborrow(), level.idx, donated_key);
 
                         underflow = false;
@@ -278,11 +289,13 @@ pub fn remove(
                     }
                 }
 
-                if let Some(mut neighbor) = left {
-                    if right.as_ref().map_or(true, |r| r.gt(&neighbor)) {
+                if let Some(neighbor) = &mut left {
+                    if right.as_ref().map_or(true, |r| r.gt(neighbor)) {
                         log::debug!("merge left");
                         underflow = !level.node.can_donate();
+                        rt.realloc(&mut neighbor.ptr);
                         neighbor.node.realloc_keys(rt.reborrow());
+                        level.idx -= 1;
                         let (_, key) = level
                             .node
                             .remove(rt.reborrow(), level.idx, false)
@@ -300,10 +313,11 @@ pub fn remove(
                 if let Some(neighbor) = right {
                     underflow = !level.node.can_donate();
                     log::debug!("merge right");
-                    let (neighbor_ptr, key) = level
+                    let (neighbor_ptr, _) = level
                         .node
                         .remove(rt.reborrow(), level.idx + 1, false)
                         .expect("must be there");
+                    let key = level.node.get_key(rt.reborrow(), level.idx);
                     assert_eq!(neighbor_ptr, neighbor.ptr, "suppose to remove the neighbor");
                     let last_key = prev.merge(&neighbor.node, rt.reborrow(), key, true);
                     level.node.set_key(rt.reborrow(), level.idx, last_key);
@@ -357,8 +371,12 @@ impl PartialOrd for NodeWithPtr {
 
 // for debug
 #[cfg(test)]
-pub fn print<K, D>(view: &impl AbstractViewer, ptr: PagePtr<NodePage>, k: K)
-where
+pub fn print<K, D>(
+    rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+    ptr: PagePtr<NodePage>,
+    k: K,
+    old: bool,
+) where
     K: Fn(&[u8]) -> D,
     D: std::fmt::Display,
 {
@@ -369,18 +387,26 @@ where
     let mut edges = Vec::new();
 
     fn print_inner<K, D>(
-        view: &impl AbstractViewer,
+        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         ptr: PagePtr<NodePage>,
         nodes: &mut BTreeMap<u32, String>,
         edges: &mut Vec<(u32, u32)>,
         k: &K,
+        old: bool,
     ) where
         K: Fn(&[u8]) -> D,
         D: std::fmt::Display,
     {
+        let view = rt.io.read();
         let page = view.page(ptr);
         let node_text = (0..(page.len() - usize::from(!page.is_leaf())))
-            .map(|idx| page.get_key_old(view, idx))
+            .map(|idx| {
+                if old {
+                    page.get_key_old(&view, idx)
+                } else {
+                    page.get_key(rt.reborrow(), idx)
+                }
+            })
             .map(|key| format!("{}:{}", key.table_id, k(&key.bytes)))
             .collect::<Vec<_>>()
             .join("|");
@@ -389,12 +415,12 @@ where
         for n in (0..page.len()).map(|idx| page.child[idx].unwrap()) {
             edges.push((ptr.raw_number(), n.raw_number()));
             if !page.is_leaf() {
-                print_inner(view, n, nodes, edges, k);
+                print_inner(rt.reborrow(), n, nodes, edges, k, old);
             }
         }
     }
 
-    print_inner(view, ptr, &mut nodes, &mut edges, &k);
+    print_inner(rt, ptr, &mut nodes, &mut edges, &k, old);
 
     let edges = edges
         .into_iter()
@@ -407,5 +433,5 @@ where
         })
         .collect::<Vec<_>>()
         .join("\n");
-    print!("digraph {{\n{edges}\n}}\n");
+    log::debug!("digraph {{\n{edges}\n}}\n");
 }

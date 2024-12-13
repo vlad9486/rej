@@ -378,8 +378,9 @@ impl NodePage {
         let chunks = key.bytes.chunks(0x10);
 
         let mut v = Vec::with_capacity(0x10 * 4);
-        for (ptr, chunk) in self.keys_ptr().zip(chunks) {
-            let page = rt.mutate(ptr);
+        for (ptr, chunk) in self.key.iter_mut().zip(chunks) {
+            let ptr = ptr.get_or_insert_with(|| rt.create());
+            let page = rt.mutate(*ptr);
             v.extend_from_slice(&page.keys[idx]);
 
             page.keys[idx] = [0; 0x10];

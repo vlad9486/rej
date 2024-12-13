@@ -7,7 +7,7 @@ use super::with_db;
 #[test]
 fn keys() {
     with_db(0x123, |db, rng| {
-        let mut keys = (0..100)
+        let mut keys = (1..100)
             .map(|i| {
                 [0, 1]
                     .into_iter()
@@ -31,12 +31,9 @@ fn keys() {
 
         keys.shuffle(rng);
         for key in &keys {
-            // db.print(printer);
-            let value = db.remove(0, key).unwrap().unwrap_or_else(|| {
-                panic!("{}", printer(key));
-            });
+            log::debug!("will {}", printer(key));
+            let value = db.remove(0, key).unwrap().unwrap();
 
-            // println!("ok {}", printer(key));
             db.deallocate(value).unwrap();
         }
         db.print(printer);

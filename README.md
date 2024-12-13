@@ -10,7 +10,7 @@ ACID is not tested well.
 
 ## TODO:
 
-* Allocate/deallocate space for the data in the dedicated WAL entry.
+* Longer value.
 * Full encryption (Adiantum).
 * More tests.
 * More tests for ACID.
