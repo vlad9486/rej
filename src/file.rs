@@ -1,6 +1,5 @@
 use std::{
     fs, io,
-    ops::Range,
     path::Path,
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -78,25 +77,6 @@ impl FileIo {
             write_counter: AtomicU32::new(0),
             mapped,
         })
-    }
-
-    pub fn write_range<T>(
-        &self,
-        ptr: impl Into<Option<PagePtr<T>>>,
-        page: &T,
-        range: Range<usize>,
-    ) -> io::Result<()>
-    where
-        T: PlainData,
-    {
-        let offset =
-            (ptr.into().map_or(0, PagePtr::raw_number) as u64) * PAGE_SIZE + range.start as u64;
-        let slice = page
-            .as_bytes()
-            .get(range)
-            .expect("`range` must be in the range");
-        self.write_stats(offset);
-        utils::write_at(&self.file, slice, offset)
     }
 
     fn write_stats(&self, offset: u64) {

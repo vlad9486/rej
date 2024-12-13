@@ -50,20 +50,31 @@ impl Db {
         Ok(DbValue { ptr })
     }
 
-    pub fn deallocate(&self, value: DbValue) -> Result<(), WalError> {
+    pub fn deallocate(&self, value: DbValue) -> Result<(), DbError> {
         let mut wal_lock = self.wal.lock();
         let (_, free) = wal_lock.cache_mut();
+
+        self.file.read().page(value.ptr).deallocate(free);
+
         free.free(value.ptr);
-        wal_lock.collect_garbage(&self.file)
+        wal_lock.collect_garbage(&self.file)?;
+
+        Ok(())
     }
 
     /// # Panics
-    /// if buf length is bigger than `DataPage::CAPACITY`
-    /// unlimited value size is not implemented yet
-    pub fn write(&self, value: &DbValue, buf: &[u8]) -> io::Result<()> {
+    /// if buf length is bigger than `1536 kiB`
+    pub fn write(&self, value: &DbValue, buf: &[u8]) -> Result<(), DbError> {
+        let mut wal_lock = self.wal.lock();
+        let (alloc, _) = wal_lock.cache_mut();
+
         let mut page = MetadataPage::empty();
-        let len = page.put_data(buf);
-        self.file.write_range(value.ptr, &page, 0..len)
+        page.put_data(alloc, &self.file, buf)?;
+        self.file.write(value.ptr, &page)?;
+
+        wal_lock.fill_cache(&self.file)?;
+
+        Ok(())
     }
 
     pub fn length(&self, value: &DbValue) -> usize {
@@ -73,14 +84,15 @@ impl Db {
     /// # Panics
     /// if offset plus buf length is smaller than the value size
     pub fn read(&self, value: &DbValue, offset: usize, buf: &mut [u8]) {
-        self.file.read().page(value.ptr).read(offset, buf);
+        let view = self.file.read();
+        view.page(value.ptr).read(&view, offset, buf);
     }
 
     pub fn read_to_vec(&self, value: &DbValue) -> Vec<u8> {
         let view = self.file.read();
         let value = view.page(value.ptr);
         let mut buf = vec![0; value.len()];
-        value.read(0, &mut buf);
+        value.read(&view, 0, &mut buf);
         buf
     }
 

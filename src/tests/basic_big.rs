@@ -1,6 +1,24 @@
 use super::with_db;
 
 #[test]
+fn big_value() {
+    with_db(0x123, |db, rng| {
+        use rand::RngCore;
+
+        let mut data = vec![0; 0x170000];
+        rng.fill_bytes(&mut data);
+
+        let value = db.allocate().unwrap();
+        db.write(&value, &data).unwrap();
+        db.insert(&value, 0, b"big_value").unwrap();
+
+        let value = db.retrieve(0, b"big_value").unwrap();
+        let stored = db.read_to_vec(&value);
+        assert_eq!(data, stored);
+    });
+}
+
+#[test]
 fn big() {
     with_db(0x123, |db, rng| {
         use rand::seq::SliceRandom;

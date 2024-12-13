@@ -1,6 +1,8 @@
+use std::io;
+
 use super::{
     page::{PAGE_SIZE, PagePtr},
-    runtime::PlainData,
+    runtime::{PlainData, AbstractIo, AbstractViewer, Alloc, Free},
 };
 
 #[repr(C)]
@@ -30,24 +32,63 @@ impl MetadataPage {
         self.len as usize
     }
 
-    pub fn put_data(&mut self, buf: &[u8]) -> usize {
+    pub fn put_data(
+        &mut self,
+        alloc: &mut impl Alloc,
+        io: &impl AbstractIo,
+        buf: &[u8],
+    ) -> io::Result<()> {
         self.len = buf.len() as u64;
-        match &mut self.data {
-            Data::Immediately(data) => {
-                data[..buf.len()].clone_from_slice(buf);
+        if buf.len() <= 4084 {
+            let mut array = [0; 4084];
+            array[..buf.len()].clone_from_slice(buf);
+            self.data = Data::Immediately(array);
+        } else {
+            let mut array = [None; 1021];
+            for (chunk, ptr) in buf.chunks(PAGE_SIZE as usize).zip(array.as_mut()) {
+                let ptr = ptr.get_or_insert_with(|| alloc.alloc());
+                let mut page = [0; PAGE_SIZE as usize];
+                page[..chunk.len()].clone_from_slice(chunk);
+                io.write(*ptr, &page)?;
             }
-            Data::Indirect(_) => unimplemented!(),
+            self.data = Data::Indirect(array);
         }
-        // size of discriminant is 4
-        memoffset::offset_of!(MetadataPage, data) + 4 + buf.len()
+
+        Ok(())
     }
 
-    pub fn read(&self, offset: usize, buf: &mut [u8]) {
+    pub fn read(&self, view: &impl AbstractViewer, offset: usize, buf: &mut [u8]) {
+        let len = buf.len();
+        let mut buf = &mut buf[..(self.len as usize - offset).min(len)];
         match &self.data {
-            Data::Immediately(data) => {
-                buf.clone_from_slice(&data[offset..][..buf.len()]);
+            Data::Immediately(array) => {
+                buf.clone_from_slice(&array[offset..][..buf.len()]);
             }
-            Data::Indirect(_) => unimplemented!(),
+            Data::Indirect(array) => {
+                const P: usize = PAGE_SIZE as usize;
+
+                let idx = offset / P;
+                let mut offset = offset % P;
+                let mut pointers = array[idx..].iter();
+                while !buf.is_empty() {
+                    let page = view.page(pointers.next().unwrap().unwrap());
+                    let l = (P - offset).min(buf.len());
+                    buf[..l].clone_from_slice(&page[offset..(offset + l)]);
+                    buf = &mut buf[(P - offset)..];
+                    offset = 0;
+                }
+            }
+        }
+    }
+
+    pub fn deallocate(&self, free: &mut impl Free) {
+        match &self.data {
+            Data::Immediately(_) => {}
+            Data::Indirect(list) => {
+                for item in list.iter().flatten() {
+                    free.free(*item);
+                }
+            }
         }
     }
 }
