@@ -73,7 +73,7 @@ impl MetadataPage {
                     let page = view.page(pointers.next().unwrap().unwrap());
                     let l = (P - offset).min(buf.len());
                     buf[..l].clone_from_slice(&page[offset..(offset + l)]);
-                    buf = &mut buf[(P - offset)..];
+                    buf = &mut buf[l..];
                     offset = 0;
                 }
             }
