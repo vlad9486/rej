@@ -89,7 +89,7 @@ fn remove_all() {
         for key in &keys {
             let value = db.allocate().unwrap();
             db.insert(&value, 0, key).unwrap();
-            db.write(&value, key).unwrap();
+            db.rewrite(&value, key).unwrap();
         }
         let printer = |key: &[u8]| key[0];
         db.print(printer);

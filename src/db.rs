@@ -25,6 +25,8 @@ pub enum DbError {
     Io(#[from] io::Error),
     #[error("{0}")]
     WalError(#[from] WalError),
+    #[error("key already exist {}", hex::encode(_0))]
+    AlreadyExist(Vec<u8>),
 }
 
 pub struct Db {
@@ -65,11 +67,12 @@ impl Db {
 
     /// # Panics
     /// if buf length is bigger than `1536 kiB`
-    pub fn write(&self, value: &DbValue, buf: &[u8]) -> Result<(), DbError> {
+    pub fn rewrite(&self, value: &DbValue, buf: &[u8]) -> Result<(), DbError> {
         let mut wal_lock = self.wal.lock();
-        let (alloc, _) = wal_lock.cache_mut();
+        let (alloc, free) = wal_lock.cache_mut();
 
-        let mut page = MetadataPage::empty();
+        let mut page = *self.file.read().page(value.ptr);
+        page.deallocate(free);
         page.put_data(alloc, &self.file, buf)?;
         self.file.write(value.ptr, &page)?;
 
@@ -82,8 +85,6 @@ impl Db {
         self.file.read().page(value.ptr).len()
     }
 
-    /// # Panics
-    /// if offset plus buf length is smaller than the value size
     pub fn read(&self, value: &DbValue, offset: usize, buf: &mut [u8]) {
         let view = self.file.read();
         view.page(value.ptr).read(&view, offset, buf);
@@ -115,12 +116,12 @@ impl Db {
 
     pub fn retrieve(&self, table_id: u32, key: &[u8]) -> Option<DbValue> {
         let head_ptr = self.wal.lock().current_head();
-        let key = Key {
+        let path = Key {
             table_id,
             bytes: key.into(),
         };
         let view = self.file.read();
-        let ptr = btree::get(&view, head_ptr, key)?;
+        let ptr = btree::get(&view, head_ptr, path)?;
         Some(DbValue { ptr })
     }
 
@@ -135,13 +136,8 @@ impl Db {
             .map(|(key, ptr)| (key, DbValue { ptr }))
     }
 
-    pub fn insert(
-        &self,
-        value: &DbValue,
-        table_id: u32,
-        key: &[u8],
-    ) -> Result<Option<DbValue>, DbError> {
-        let key = Key {
+    pub fn insert(&self, value: &DbValue, table_id: u32, key: &[u8]) -> Result<(), DbError> {
+        let path = Key {
             table_id,
             bytes: key.into(),
         };
@@ -152,15 +148,19 @@ impl Db {
         let io = &self.file;
         let mut storage = Default::default();
         let mut rt = Rt::new(alloc, free, io, &mut storage);
-        let (new_head, old) = btree::insert(rt.reborrow(), old_head, value.ptr, key)?;
+        let (new_head, old) = btree::insert(rt.reborrow(), old_head, value.ptr, path)?;
         rt.flush()?;
         wal_lock.new_head(&self.file, new_head)?;
 
-        Ok(old.map(|ptr| DbValue { ptr }))
+        if old.is_some() {
+            Err(DbError::AlreadyExist(key.to_vec()))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn remove(&self, table_id: u32, key: &[u8]) -> Result<Option<DbValue>, DbError> {
-        let key = Key {
+        let path = Key {
             table_id,
             bytes: key.into(),
         };
@@ -171,7 +171,7 @@ impl Db {
         let io = &self.file;
         let mut storage = Default::default();
         let mut rt = Rt::new(alloc, free, io, &mut storage);
-        let (new_head, ptr) = btree::remove(rt.reborrow(), old_head, key)?;
+        let (new_head, ptr) = btree::remove(rt.reborrow(), old_head, path)?;
         rt.flush()?;
         wal_lock.new_head(&self.file, new_head)?;
 

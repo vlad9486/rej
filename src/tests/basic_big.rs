@@ -9,7 +9,7 @@ fn big_value() {
         rng.fill_bytes(&mut data);
 
         let value = db.allocate().unwrap();
-        db.write(&value, &data).unwrap();
+        db.rewrite(&value, &data).unwrap();
         db.insert(&value, 0, b"big_value").unwrap();
 
         let value = db.retrieve(0, b"big_value").unwrap();
@@ -31,7 +31,7 @@ fn big() {
             let key = format!("key                  {i:03}");
             let value = db.allocate().unwrap();
             db.insert(&value, 0, key.as_bytes()).unwrap();
-            db.write(&value, &i.to_le_bytes()).unwrap();
+            db.rewrite(&value, &i.to_le_bytes()).unwrap();
         }
 
         for i in 0..NUM {

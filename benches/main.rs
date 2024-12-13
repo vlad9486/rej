@@ -5,7 +5,7 @@ criterion_main!(benches);
 
 use tempdir::TempDir;
 
-use rej::{Db, IoOptions};
+use rej::{Db, DbError, IoOptions};
 
 fn insert(c: &mut Criterion) {
     let dir = TempDir::new_in("target/tmp", "rej").unwrap();
@@ -32,7 +32,15 @@ fn insert(c: &mut Criterion) {
             for i in &indexes {
                 key[24..26].clone_from_slice(&i.to_le_bytes());
                 let value = db.allocate().unwrap();
-                db.insert(&value, 0, &key).unwrap();
+                db.insert(&value, 0, &key)
+                    .or_else(|err| {
+                        if matches!(err, DbError::AlreadyExist(..)) {
+                            Ok(())
+                        } else {
+                            Err(err)
+                        }
+                    })
+                    .unwrap();
             }
             for i in 0..NUM {
                 key[24..26].clone_from_slice(&i.to_le_bytes());

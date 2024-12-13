@@ -17,18 +17,18 @@ fn main() {
     log::info!("{:?}", db.stats());
     let value = db.allocate().unwrap();
     db.insert(&value, 0, b"some key 1, long").unwrap();
-    db.write(&value, &data(10)).unwrap();
+    db.rewrite(&value, &data(10)).unwrap();
 
     log::info!("{:?}", db.stats());
     let value = db.allocate().unwrap();
     db.insert(&value, 0, b"some key 6, too                long")
         .unwrap();
-    db.write(&value, &data(60)).unwrap();
+    db.rewrite(&value, &data(60)).unwrap();
 
     log::info!("{:?}", db.stats());
     let value = db.allocate().unwrap();
     db.insert(&value, 0, b"some key 3").unwrap();
-    db.write(&value, &data(30)).unwrap();
+    db.rewrite(&value, &data(30)).unwrap();
 
     log::info!("{:?}", db.stats());
 
