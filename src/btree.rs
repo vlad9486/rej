@@ -44,6 +44,11 @@ impl ItInner {
         table_id: u32,
         key: Option<&[u8]>,
     ) -> Option<Self> {
+        let key = Key {
+            table_id,
+            bytes: key.unwrap_or(&[]).into(),
+        };
+
         let mut node;
         loop {
             node = view.page(ptr);
@@ -51,14 +56,8 @@ impl ItInner {
                 return None;
             }
 
-            let idx = key.map_or(usize::from(!forward) * node.len(), |key| {
-                let key = Key {
-                    table_id,
-                    bytes: key.into(),
-                };
+            let idx = node.search(view, &key).unwrap_or_else(|idx| idx) - usize::from(!forward);
 
-                node.search(view, &key).unwrap_or_else(|idx| idx)
-            }) - usize::from(!forward);
             match node.get_child(idx)? {
                 Child::Node(p) => ptr = p,
                 Child::Leaf(_) => {
