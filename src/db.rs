@@ -12,7 +12,7 @@ use super::{
     value::MetadataPage,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct DbValue {
     ptr: PagePtr<MetadataPage>,
 }
@@ -45,6 +45,7 @@ impl Db {
         let mut wal_lock = self.wal.lock();
         let (alloc, _) = wal_lock.cache_mut();
         let ptr = alloc.alloc();
+        self.file.write(ptr, &MetadataPage::empty())?;
         wal_lock.fill_cache(&self.file)?;
 
         Ok(DbValue { ptr })

@@ -16,7 +16,6 @@ pub struct MetadataPage {
 #[derive(Clone, Copy)]
 enum Data {
     Immediately([u8; 4084]),
-    #[allow(dead_code)]
     Indirect([Option<PagePtr<[u8; PAGE_SIZE as usize]>>; 1021]),
 }
 
