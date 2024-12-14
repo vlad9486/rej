@@ -5,16 +5,16 @@ criterion_main!(benches);
 
 use tempdir::TempDir;
 
-use rej::{Db, DbError, IoOptions};
+use rej::ext::{self, Db};
 
 fn insert(c: &mut Criterion) {
     let dir = TempDir::new_in("target/tmp", "rej").unwrap();
     let path = dir.path().join("bench-insert");
 
-    let db = Db::new(&path, IoOptions::default()).unwrap();
+    let db = Db::new(&path, Default::default()).unwrap();
     drop(db);
 
-    let db = Db::new(&path, IoOptions::default()).unwrap();
+    let db = Db::new(&path, Default::default()).unwrap();
 
     const NUM: u16 = 100;
     let mut indexes = (0..NUM).collect::<Vec<_>>();
@@ -31,20 +31,11 @@ fn insert(c: &mut Criterion) {
             let mut key = *b"key key key asd asd asd     ";
             for i in &indexes {
                 key[24..26].clone_from_slice(&i.to_le_bytes());
-                let value = db.allocate().unwrap();
-                db.insert(&value, 0, &key)
-                    .or_else(|err| {
-                        if matches!(err, DbError::AlreadyExist(..)) {
-                            Ok(())
-                        } else {
-                            Err(err)
-                        }
-                    })
-                    .unwrap();
+                ext::put(&db, 0, &key, &[0, 1]).unwrap();
             }
             for i in 0..NUM {
                 key[24..26].clone_from_slice(&i.to_le_bytes());
-                db.retrieve(0, &key).unwrap();
+                black_box(ext::get(&db, 0, &key).unwrap());
             }
             black_box(db.stats());
         })

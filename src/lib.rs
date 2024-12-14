@@ -21,5 +21,5 @@ mod tests;
 pub use self::{
     file::IoOptions,
     wal::{DbStats, WalError},
-    db::{Db, DbError, DbValue, DbIterator},
+    db::{Db, DbError, DbIterator, Value, Entry, Occupied, Vacant, ext},
 };

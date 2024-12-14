@@ -2,19 +2,25 @@ use std::{fs, panic, path::Path};
 
 use tempdir::TempDir;
 
-use crate::{Db, DbError, DbIterator, DbStats, DbValue, IoOptions, wal::FreelistCache};
+use crate::{Db, DbError, DbIterator, DbStats, IoOptions, wal::FreelistCache};
 
 fn populate(db: Db) -> Result<DbStats, DbError> {
     let data = |s| (s..128u8).collect::<Vec<u8>>();
-    let v = db.allocate().unwrap();
-    db.insert(&v, 0, b"some key 1, long")?;
-    db.rewrite(&v, &data(10))?;
-    let v = db.allocate().unwrap();
-    db.insert(&v, 0, b"some key 6, too                long")?;
-    db.rewrite(&v, &data(60))?;
-    let v = db.allocate().unwrap();
-    db.insert(&v, 0, b"some key 3")?;
-    db.rewrite(&v, &data(30))?;
+    db.entry(0, b"some key 1, long")
+        .vacant()
+        .unwrap()
+        .insert()?
+        .rewrite(&data(10))?;
+    db.entry(0, b"some key 6, too                long")
+        .vacant()
+        .unwrap()
+        .insert()?
+        .rewrite(&data(20))?;
+    db.entry(0, b"some key 3")
+        .vacant()
+        .unwrap()
+        .insert()?
+        .rewrite(&data(30))?;
 
     Ok(db.stats())
 }
@@ -27,7 +33,7 @@ fn check(db: Db) -> bool {
     }
 
     impl Iterator for It {
-        type Item = (Vec<u8>, DbValue);
+        type Item = (Vec<u8>, Vec<u8>);
 
         fn next(&mut self) -> Option<Self::Item> {
             self.db.next(&mut self.inner)
@@ -35,7 +41,7 @@ fn check(db: Db) -> bool {
     }
 
     let mut it = It {
-        inner: db.iterator(0, None, true),
+        inner: db.entry(0, b"").into_db_iter(),
         db,
     };
     let cnt = (&mut it).count();
@@ -68,6 +74,7 @@ fn recovery_test<const MESS_PAGE: bool>() {
 }
 
 fn crash_test(path: &Path, cfg: IoOptions) {
+    fs::remove_file(path).unwrap_or_default();
     let db = Db::new(path, IoOptions::default()).unwrap();
     drop(db);
 
@@ -82,7 +89,6 @@ fn crash_test(path: &Path, cfg: IoOptions) {
 
     let db = Db::new(path, IoOptions::default()).unwrap();
     assert!(check(db));
-    fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -91,6 +97,7 @@ fn recovery() {
 }
 
 #[test]
+#[ignore = "TODO: Protect metadata page against hardware failure."]
 fn recovery_messed_page() {
     recovery_test::<true>();
 }

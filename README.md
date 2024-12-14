@@ -10,6 +10,8 @@ ACID is not tested well.
 
 ## TODO:
 
+* Protect metadata page against hardware failure.
+* Fix table scanning.
 * Full encryption (Adiantum).
 * More tests.
 * More tests for ACID.

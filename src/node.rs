@@ -3,7 +3,6 @@ use std::{borrow::Cow, mem};
 use super::{
     page::{PagePtr, RawPtr},
     runtime::{PlainData, Alloc, Free, AbstractIo, AbstractViewer, Rt},
-    value::MetadataPage,
 };
 
 #[cfg(feature = "small")]
@@ -32,11 +31,6 @@ pub struct NodePage {
     stem: u16,
     // number of children
     len: u16,
-}
-
-pub enum Child {
-    Node(PagePtr<NodePage>),
-    Leaf(PagePtr<MetadataPage>),
 }
 
 unsafe impl PlainData for NodePage {
@@ -80,10 +74,6 @@ impl NodePage {
         self.len as usize
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     pub fn can_donate(&self) -> bool {
         self.len() > K
     }
@@ -124,14 +114,6 @@ impl NodePage {
         Key {
             table_id: self.table_id[idx],
             bytes: Cow::Owned(v),
-        }
-    }
-
-    pub fn get_child(&self, idx: usize) -> Option<Child> {
-        let ptr = self.child[idx];
-        match self.is_leaf() {
-            false => ptr.map(Child::Node),
-            true => ptr.map(PagePtr::cast).map(Child::Leaf),
         }
     }
 

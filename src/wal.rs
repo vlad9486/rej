@@ -230,7 +230,7 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    pub fn new_head<T>(mut self, file: &FileIo, head: PagePtr<T>) -> Result<(), WalError> {
+    pub fn new_head<T>(&mut self, file: &FileIo, head: PagePtr<T>) -> Result<(), WalError> {
         self.0.head = head.cast();
         self.write(file)?;
         self.collect_garbage(file)?;

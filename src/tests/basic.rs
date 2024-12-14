@@ -19,22 +19,28 @@ fn keys() {
 
         keys.shuffle(rng);
         for key in &keys {
-            let value = db.allocate().unwrap();
-            db.insert(&value, 0, key).unwrap();
+            db.entry(0, key)
+                .vacant()
+                .unwrap_or_else(|| panic!("{}", printer(key)))
+                .insert()
+                .unwrap();
         }
 
         keys.shuffle(rng);
         for key in &keys {
-            db.retrieve(0, key)
+            db.entry(0, key)
+                .occupied()
                 .unwrap_or_else(|| panic!("{}", printer(key)));
         }
 
         keys.shuffle(rng);
         for key in &keys {
             log::debug!("will {}", printer(key));
-            let value = db.remove(0, key).unwrap().unwrap();
-
-            db.deallocate(value).unwrap();
+            db.entry(0, key)
+                .occupied()
+                .unwrap_or_else(|| panic!("{}", printer(key)))
+                .remove()
+                .unwrap();
         }
         db.print(printer);
     })
@@ -44,11 +50,10 @@ fn keys() {
 fn remove_merge_with_right() {
     with_db(0x123, |db, _rng| {
         for i in 0..8 {
-            let value = db.allocate().unwrap();
-            db.insert(&value, 5, &[i]).unwrap();
+            db.entry(5, &[i]).vacant().unwrap().insert().unwrap();
         }
         db.print(|key| key[0]);
-        db.remove(5, &[3]).unwrap();
+        db.entry(5, &[3]).occupied().unwrap().remove().unwrap();
         db.print(|key| key[0]);
     })
 }
@@ -57,11 +62,10 @@ fn remove_merge_with_right() {
 fn remove_merge_with_left() {
     with_db(0x123, |db, _rng| {
         for i in 0..8 {
-            let value = db.allocate().unwrap();
-            db.insert(&value, 5, &[i]).unwrap();
+            db.entry(5, &[i]).vacant().unwrap().insert().unwrap();
         }
         db.print(|key| key[0]);
-        db.remove(5, &[5]).unwrap();
+        db.entry(5, &[5]).occupied().unwrap().remove().unwrap();
         db.print(|key| key[0]);
     })
 }
@@ -70,14 +74,13 @@ fn remove_merge_with_left() {
 fn remove_borrow() {
     with_db(0x123, |db, _rng| {
         for i in 0..9 {
-            let value = db.allocate().unwrap();
-            db.insert(&value, 5, &[i]).unwrap();
+            db.entry(5, &[i]).vacant().unwrap().insert().unwrap();
         }
-        let value = db.remove(5, &[3]).unwrap().unwrap();
+        db.entry(5, &[3]).occupied().unwrap().remove().unwrap();
         db.print(|key| key[0]);
-        db.insert(&value, 5, &[3]).unwrap();
+        db.entry(5, &[3]).vacant().unwrap().insert().unwrap();
         db.print(|key| key[0]);
-        db.remove(5, &[5]).unwrap();
+        db.entry(5, &[5]).occupied().unwrap().remove().unwrap();
         db.print(|key| key[0]);
     })
 }
@@ -87,21 +90,31 @@ fn remove_all() {
     with_db(0x123, |db, rng| {
         let mut keys = (0..17).map(|i| vec![i]).collect::<Vec<_>>();
         for key in &keys {
-            let value = db.allocate().unwrap();
-            db.insert(&value, 0, key).unwrap();
-            db.rewrite(&value, key).unwrap();
+            db.entry(5, key)
+                .vacant()
+                .unwrap()
+                .insert()
+                .unwrap()
+                .rewrite(key)
+                .unwrap()
         }
         let printer = |key: &[u8]| key[0];
         db.print(printer);
 
         keys.shuffle(rng);
         for key in &keys {
-            println!("{}", printer(key));
-            let value = db.remove(0, key).unwrap().unwrap_or_else(|| {
-                db.print(printer);
-                panic!();
-            });
-            assert_eq!(db.read_to_vec(&value), key.clone());
+            log::debug!("{}", printer(key));
+            let value = db
+                .entry(5, key)
+                .occupied()
+                .unwrap_or_else(|| {
+                    db.print(printer);
+                    panic!();
+                })
+                .remove()
+                .unwrap();
+            assert_eq!(value.read_to_vec(), key.clone());
+            drop(value);
             db.print(printer);
         }
     })
