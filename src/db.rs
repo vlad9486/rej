@@ -202,6 +202,8 @@ pub enum DbError {
     Io(#[from] io::Error),
     #[error("{0}")]
     WalError(#[from] WalError),
+    #[error("wrong password")]
+    WrongPassword,
 }
 
 pub struct Db {
@@ -216,6 +218,11 @@ impl Db {
         let wal = Wal::new(create, &file)?;
 
         Ok(Db { file, wal })
+    }
+
+    #[cfg(feature = "cipher")]
+    pub fn crypt_shred(&self, crypto_seed: [u8; 32]) -> io::Result<()> {
+        self.file.crypt_shred(crypto_seed)
     }
 
     #[cfg(test)]

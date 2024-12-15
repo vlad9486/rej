@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io, mem, slice};
+use std::{collections::BTreeMap, io, mem, ops::Deref, slice};
 
 use super::page::{PagePtr, RawPtr, PAGE_SIZE};
 
@@ -45,11 +45,14 @@ pub trait Free {
 }
 
 pub trait AbstractViewer {
-    fn page<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> &T
+    type Page<'a, T>: Deref<Target = T>
     where
+        Self: 'a,
         T: PlainData;
 
-    fn bytes(&self, ptr: impl Into<Option<PagePtr<()>>>) -> &[u8];
+    fn page<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> Self::Page<'_, T>
+    where
+        T: PlainData;
 }
 
 pub trait AbstractIo {
@@ -132,7 +135,7 @@ where
     where
         T: PlainData,
     {
-        let v = view.bytes(ptr.cast())[..mem::size_of::<T>()].to_vec();
+        let v = view.page::<[u8; PAGE_SIZE as usize]>(ptr.cast())[..mem::size_of::<T>()].to_vec();
         self.free.free(mem::replace(ptr, self.alloc.alloc::<T>()));
         self.storage.insert(ptr.raw_number(), v);
     }

@@ -78,9 +78,9 @@ impl Wal {
             let it = (0..Self::SIZE)
                 .map(PagePtr::from_raw_number)
                 .map(|ptr| view.page::<RecordPage>(ptr))
-                .filter_map(RecordPage::check);
+                .filter_map(|p| p.check().copied());
 
-            let mut inner = None::<&RecordSeq>;
+            let mut inner = None::<RecordSeq>;
             for item in it {
                 if inner.map_or(0, |i| i.seq) > item.seq {
                     break;
@@ -89,11 +89,7 @@ impl Wal {
                 }
             }
 
-            let wal = inner
-                .copied()
-                .map(Mutex::new)
-                .map(Self)
-                .ok_or(WalError::BadWal)?;
+            let wal = inner.map(Mutex::new).map(Self).ok_or(WalError::BadWal)?;
 
             let mut lock = wal.lock();
             let stats = lock.stats(file);

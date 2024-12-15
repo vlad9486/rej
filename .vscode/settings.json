@@ -1,6 +1,7 @@
 {
     "cSpell.words": [
         "adiantum",
+        "chacha",
         "freelist",
         "libc",
         "memmap",
@@ -11,5 +12,8 @@
         "thiserror",
         "rngs",
         "seedable",
+        "hkdf",
+        "zeroize",
+        "getrandom",
     ]
 }
