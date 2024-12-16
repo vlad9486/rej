@@ -2,6 +2,29 @@ use std::{fs, io, path::Path};
 
 use memmap2::Mmap;
 
+#[cfg(feature = "cipher")]
+#[cfg(unix)]
+pub fn m_lock<T>(p: &T) -> bool {
+    use std::{ptr, mem};
+
+    let ptr = ptr::from_ref(p).cast();
+    let len = mem::size_of_val(p);
+
+    unsafe { libc::mlock(ptr, len) == 0 }
+}
+
+#[cfg(feature = "cipher")]
+#[cfg(windows)]
+pub fn mlock<T>(p: &T) -> bool {
+    use std::{ptr, mem};
+    use windows_sys::Win32::System::Memory;
+
+    let ptr = ptr::from_ref(p).cast();
+    let len = mem::size_of_val(p);
+
+    unsafe { Memory::VirtualLock(ptr, len) != 0 }
+}
+
 #[cfg(unix)]
 pub fn write_at(file: &fs::File, buf: &[u8], offset: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;

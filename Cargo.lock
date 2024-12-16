@@ -824,6 +824,7 @@ dependencies = [
  "sha3",
  "tempdir",
  "thiserror",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

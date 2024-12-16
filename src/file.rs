@@ -127,6 +127,11 @@ impl FileIo {
     }
 
     #[cfg(feature = "cipher")]
+    pub fn m_lock(&self) {
+        utils::m_lock(&self.cipher);
+    }
+
+    #[cfg(feature = "cipher")]
     fn password_aead(phrase: &str, salt: [u8; 16]) -> ChaCha20Poly1305 {
         use argon2::{
             password_hash::SaltString, ParamsBuilder, PasswordHasher, Argon2, Algorithm, Version,

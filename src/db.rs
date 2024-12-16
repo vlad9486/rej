@@ -221,6 +221,11 @@ impl Db {
     }
 
     #[cfg(feature = "cipher")]
+    pub fn m_lock(&self) {
+        self.file.m_lock();
+    }
+
+    #[cfg(feature = "cipher")]
     pub fn crypt_shred(&self, crypto_seed: [u8; 32]) -> io::Result<()> {
         self.file.crypt_shred(crypto_seed)
     }

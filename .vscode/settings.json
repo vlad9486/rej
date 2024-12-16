@@ -15,5 +15,6 @@
         "hkdf",
         "zeroize",
         "getrandom",
+        "mlock",
     ]
 }

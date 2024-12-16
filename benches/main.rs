@@ -5,16 +5,27 @@ criterion_main!(benches);
 
 use tempdir::TempDir;
 
-use rej::ext::{self, Db};
+use rej::{
+    ext::{self, Db},
+    IoOptions,
+};
 
 fn insert(c: &mut Criterion) {
     let dir = TempDir::new_in("target/tmp", "rej").unwrap();
     let path = dir.path().join("bench-insert");
 
-    let db = Db::new(&path, Default::default()).unwrap();
+    #[cfg(feature = "cipher")]
+    let cfg = IoOptions {
+        passphrase: "qwe".to_owned(),
+        crypto_seed: rand::random(),
+        ..Default::default()
+    };
+    #[cfg(not(feature = "cipher"))]
+    let cfg = IoOptions::default();
+    let db = Db::new(&path, cfg.clone()).unwrap();
     drop(db);
 
-    let db = Db::new(&path, Default::default()).unwrap();
+    let db = Db::new(&path, cfg).unwrap();
 
     const NUM: u16 = 100;
     let mut indexes = (0..NUM).collect::<Vec<_>>();
