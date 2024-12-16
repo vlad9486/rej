@@ -44,7 +44,7 @@ impl MetadataPage {
             self.data = Data::Immediately(array);
         } else {
             let mut array = [None; 1021];
-            for (chunk, ptr) in buf.chunks(PAGE_SIZE as usize).zip(array.as_mut()) {
+            for (chunk, ptr) in buf.chunks(PAGE_SIZE as usize).zip(array.iter_mut()) {
                 let ptr = ptr.get_or_insert_with(|| alloc.alloc());
                 let mut page = [0; PAGE_SIZE as usize];
                 page[..chunk.len()].clone_from_slice(chunk);
