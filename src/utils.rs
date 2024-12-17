@@ -13,7 +13,7 @@ pub fn m_lock<T>(p: &T) -> bool {
 }
 
 #[cfg(windows)]
-pub fn mlock<T>(p: &T) -> bool {
+pub fn m_lock<T>(p: &T) -> bool {
     use std::{ptr, mem};
     use windows_sys::Win32::System::Memory;
 

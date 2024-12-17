@@ -1,8 +1,8 @@
-use std::{fs, panic, path::Path};
+use std::{fs, panic, path::Path, sync::Arc};
 
 use tempdir::TempDir;
 
-use crate::{Db, DbError, DbIterator, DbStats, IoOptions, wal::FreelistCache, Params};
+use crate::{ext, Db, DbError, DbStats, IoOptions, wal::FreelistCache, Params};
 
 fn populate(db: Db) -> Result<DbStats, DbError> {
     let data = |s| (s..128u8).collect::<Vec<u8>>();
@@ -27,25 +27,10 @@ fn populate(db: Db) -> Result<DbStats, DbError> {
 
 // TODO: proper check
 fn check(db: Db) -> bool {
-    struct It {
-        inner: DbIterator,
-        db: Db,
-    }
-
-    impl Iterator for It {
-        type Item = (Vec<u8>, Vec<u8>);
-
-        fn next(&mut self) -> Option<Self::Item> {
-            self.db.next(&mut self.inner)
-        }
-    }
-
-    let mut it = It {
-        inner: db.entry(0, b"").into_db_iter(),
-        db,
-    };
+    let db = Arc::new(db);
+    let mut it = ext::iter(db.clone(), 0, b"");
     let cnt = (&mut it).count();
-    let stats = it.db.stats();
+    let stats = db.stats();
 
     stats.cached == FreelistCache::SIZE
         && (false

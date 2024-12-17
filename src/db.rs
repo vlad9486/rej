@@ -276,17 +276,17 @@ impl Db {
         }
     }
 
-    pub fn next(&self, it: &mut DbIterator) -> Option<(Vec<u8>, Vec<u8>)> {
+    pub fn next(&self, it: &mut DbIterator) -> Option<(u32, Vec<u8>, Vec<u8>)> {
         let inner = it.inner.as_mut()?;
         let view = self.file.read();
-        let (k, v) = kv(&view, inner);
+        let (table_id, k, v) = kv(&view, inner);
 
         inner.next(&view);
         if !inner.has_next(&view) {
             it.inner = None;
         }
 
-        Some((k, v))
+        Some((table_id, k, v))
     }
 
     pub fn stats(&self) -> DbStats {
@@ -294,12 +294,13 @@ impl Db {
     }
 }
 
-fn kv(view: &impl AbstractViewer, inner: &btree::EntryInner) -> (Vec<u8>, Vec<u8>) {
+fn kv(view: &impl AbstractViewer, inner: &btree::EntryInner) -> (u32, Vec<u8>, Vec<u8>) {
     let ptr = inner.meta();
     let value = view.page(ptr);
     let mut buf = vec![0; value.len()];
     value.read(view, 0, &mut buf);
-    (inner.key(view).bytes.into_owned(), buf)
+    let key = inner.key(view);
+    (key.table_id, key.bytes.into_owned(), buf)
 }
 
 pub mod ext {
@@ -362,18 +363,26 @@ pub mod ext {
     pub struct DbIteratorOwned {
         inner: DbIterator,
         db: Arc<Db>,
+        table_id: u32,
     }
 
     pub fn iter(db: Arc<Db>, table_id: u32, key: &[u8]) -> DbIteratorOwned {
         let inner = db.entry(table_id, key).into_db_iter();
-        DbIteratorOwned { inner, db }
+        DbIteratorOwned {
+            inner,
+            db,
+            table_id,
+        }
     }
 
     impl Iterator for DbIteratorOwned {
         type Item = (Vec<u8>, Vec<u8>);
 
         fn next(&mut self) -> Option<Self::Item> {
-            self.db.next(&mut self.inner)
+            self.db
+                .next(&mut self.inner)
+                .filter(|(table_id, _, _)| *table_id == self.table_id)
+                .map(|(_, k, v)| (k, v))
         }
     }
 }
