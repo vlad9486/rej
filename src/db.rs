@@ -12,6 +12,11 @@ use super::{
     value::MetadataPage,
 };
 
+#[cfg(feature = "cipher")]
+use super::cipher::Params;
+#[cfg(not(feature = "cipher"))]
+use super::cipher_mock::Params;
+
 pub enum Entry<'a> {
     Occupied(Occupied<'a>),
     Vacant(Vacant<'a>),
@@ -212,9 +217,9 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn new(path: impl AsRef<Path>, cfg: IoOptions) -> Result<Self, DbError> {
-        let create = !path.as_ref().exists();
-        let file = FileIo::new(path, create, cfg)?;
+    pub fn new(path: impl AsRef<Path>, cfg: IoOptions, params: Params) -> Result<Self, DbError> {
+        let create = params.create();
+        let file = FileIo::new(path, cfg, params)?;
         let wal = Wal::new(create, &file)?;
 
         Ok(Db { file, wal })
@@ -226,8 +231,8 @@ impl Db {
     }
 
     #[cfg(feature = "cipher")]
-    pub fn crypt_shred(&self, crypto_seed: [u8; 32]) -> io::Result<()> {
-        self.file.crypt_shred(crypto_seed)
+    pub fn crypt_shred(&self, seed: &[u8]) -> io::Result<()> {
+        self.file.crypt_shred(seed)
     }
 
     #[cfg(test)]

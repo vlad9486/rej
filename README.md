@@ -12,12 +12,10 @@ ACID is not tested well.
 
 * Protect metadata page against hardware failure.
 * Fix table scanning.
-* Full encryption (Adiantum).
 * More tests.
 * More tests for ACID.
 
 ### Difficult
 
-* B-Tree: implement table scanning.
 * Extent allocation -> Unlimited value;
 * Better parallelism.

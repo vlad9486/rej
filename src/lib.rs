@@ -7,6 +7,10 @@ mod utils;
 mod page;
 mod runtime;
 
+#[cfg(feature = "cipher")]
+mod cipher;
+#[cfg(not(feature = "cipher"))]
+mod cipher_mock;
 mod file;
 mod wal;
 
@@ -17,6 +21,12 @@ mod db;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "cipher")]
+pub use self::cipher::{Secret, Params, CipherError};
+
+#[cfg(not(feature = "cipher"))]
+pub use self::cipher_mock::Params;
 
 pub use self::{
     file::IoOptions,

@@ -48,11 +48,11 @@ pub trait AbstractViewer {
     type Page<'a, T>: Deref<Target = T>
     where
         Self: 'a,
-        T: PlainData;
+        T: PlainData + 'a;
 
-    fn page<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> Self::Page<'_, T>
+    fn page<'a, T>(&'a self, ptr: impl Into<Option<PagePtr<T>>>) -> Self::Page<'a, T>
     where
-        T: PlainData;
+        T: PlainData + 'a;
 }
 
 pub trait AbstractIo {
@@ -64,7 +64,10 @@ pub trait AbstractIo {
 
     fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, page: &T) -> io::Result<()>
     where
-        T: PlainData;
+        T: PlainData,
+    {
+        self.write_bytes(ptr.into().map(PagePtr::cast), page.as_bytes())
+    }
 
     fn write_bytes(&self, ptr: impl Into<Option<PagePtr<()>>>, bytes: &[u8]) -> io::Result<()>;
 }
