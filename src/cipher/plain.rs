@@ -1,6 +1,7 @@
-use std::{fs, marker::PhantomData, ops::Deref};
+use std::{fs, io, marker::PhantomData, ops::Deref};
 
 use memmap2::Mmap;
+use thiserror::Error;
 
 use super::runtime::PlainData;
 
@@ -26,11 +27,24 @@ impl Params {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum CipherError {
+    #[error("io: {0}")]
+    Io(#[from] io::Error),
+}
+
+pub const CRYPTO_SIZE: usize = 0;
+
 impl Cipher {
-    pub fn new(file: &fs::File, map: &Mmap, params: Params) -> Self {
+    pub fn new(file: &fs::File, map: &Mmap, params: Params) -> Result<Self, CipherError> {
         let _ = (file, map, params);
-        Self
+        Ok(Self)
     }
+}
+
+pub fn shred(seed: &[u8]) -> Result<Vec<u8>, CipherError> {
+    let _ = seed;
+    Ok(vec![])
 }
 
 pub struct DecryptedPage<'a, T> {

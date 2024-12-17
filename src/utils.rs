@@ -2,7 +2,6 @@ use std::{fs, io, path::Path};
 
 use memmap2::Mmap;
 
-#[cfg(feature = "cipher")]
 #[cfg(unix)]
 pub fn m_lock<T>(p: &T) -> bool {
     use std::{ptr, mem};
@@ -13,7 +12,6 @@ pub fn m_lock<T>(p: &T) -> bool {
     unsafe { libc::mlock(ptr, len) == 0 }
 }
 
-#[cfg(feature = "cipher")]
 #[cfg(windows)]
 pub fn mlock<T>(p: &T) -> bool {
     use std::{ptr, mem};

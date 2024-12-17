@@ -5,6 +5,7 @@ use thiserror::Error;
 use super::{
     page::PagePtr,
     runtime::{AbstractIo, AbstractViewer, Rt, Alloc, Free},
+    cipher::CipherError,
     file::{FileIo, IoOptions},
     btree,
     node::Key,
@@ -12,10 +13,7 @@ use super::{
     value::MetadataPage,
 };
 
-#[cfg(feature = "cipher")]
 use super::cipher::Params;
-#[cfg(not(feature = "cipher"))]
-use super::cipher_mock::Params;
 
 pub enum Entry<'a> {
     Occupied(Occupied<'a>),
@@ -207,8 +205,8 @@ pub enum DbError {
     Io(#[from] io::Error),
     #[error("{0}")]
     WalError(#[from] WalError),
-    #[error("wrong password")]
-    WrongPassword,
+    #[error("cipher: {0}")]
+    Cipher(#[from] CipherError),
 }
 
 pub struct Db {
@@ -225,14 +223,16 @@ impl Db {
         Ok(Db { file, wal })
     }
 
-    #[cfg(feature = "cipher")]
+    /// Makes sense only for encrypted database
     pub fn m_lock(&self) {
         self.file.m_lock();
     }
 
-    #[cfg(feature = "cipher")]
-    pub fn crypt_shred(&self, seed: &[u8]) -> io::Result<()> {
-        self.file.crypt_shred(seed)
+    /// Makes sense only for encrypted database
+    pub fn crypt_shred(&self, seed: &[u8]) -> Result<(), DbError> {
+        self.file.crypt_shred(seed)?;
+
+        Ok(())
     }
 
     #[cfg(test)]

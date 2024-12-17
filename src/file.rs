@@ -15,10 +15,7 @@ use super::{
     page::{PagePtr, RawPtr, PAGE_SIZE},
     runtime::{PlainData, AbstractIo, AbstractViewer},
 };
-#[cfg(feature = "cipher")]
-use super::cipher::{self, Cipher, Params, EncryptedPage, DecryptedPage};
-#[cfg(not(feature = "cipher"))]
-use super::cipher_mock::{Cipher, Params, EncryptedPage, DecryptedPage};
+use super::cipher::{self, Cipher, CipherError, Params, CRYPTO_SIZE, EncryptedPage, DecryptedPage};
 
 #[derive(Default, Clone)]
 pub struct IoOptions {
@@ -58,11 +55,6 @@ impl IoOptions {
     }
 }
 
-#[cfg(feature = "cipher")]
-const CRYPTO_SIZE: usize = 0x100000;
-#[cfg(not(feature = "cipher"))]
-const CRYPTO_SIZE: usize = 0;
-
 pub struct FileIo {
     cfg: IoOptions,
     file: fs::File,
@@ -75,7 +67,11 @@ pub struct FileIo {
 impl FileIo {
     const CRYPTO_PAGES: u32 = (CRYPTO_SIZE as u64 / PAGE_SIZE) as u32;
 
-    pub fn new(path: impl AsRef<Path>, cfg: IoOptions, params: Params) -> io::Result<Self> {
+    pub fn new(
+        path: impl AsRef<Path>,
+        cfg: IoOptions,
+        params: Params,
+    ) -> Result<Self, CipherError> {
         let file = utils::open_file(path, params.create(), cfg.direct_write)?;
         file.lock_exclusive()?;
 
@@ -85,10 +81,7 @@ impl FileIo {
 
         let map = utils::mmap(&file, cfg.mmap_populate)?;
 
-        #[cfg(feature = "cipher")]
-        let cipher = Cipher::new(&file, &map, params).unwrap();
-        #[cfg(not(feature = "cipher"))]
-        let cipher = Cipher::new(&file, &map, params);
+        let cipher = Cipher::new(&file, &map, params)?;
 
         let file_len = AtomicU32::new((file.metadata()?.len() / PAGE_SIZE) as u32);
         let mapped = RwLock::new(map);
@@ -103,15 +96,16 @@ impl FileIo {
         })
     }
 
-    #[cfg(feature = "cipher")]
     pub fn m_lock(&self) {
         utils::m_lock(&self.cipher);
     }
 
-    #[cfg(feature = "cipher")]
-    pub fn crypt_shred(&self, seed: &[u8]) -> io::Result<()> {
-        let blob = cipher::shred(seed).unwrap();
-        utils::write_at(&self.file, &blob, 0)
+    pub fn crypt_shred(&self, seed: &[u8]) -> Result<(), CipherError> {
+        let blob = cipher::shred(seed)?;
+        if !blob.is_empty() {
+            utils::write_at(&self.file, &blob, 0)?;
+        }
+        Ok(())
     }
 
     fn write_stats(&self, offset: u64) {
