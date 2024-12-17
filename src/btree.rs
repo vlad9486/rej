@@ -330,7 +330,7 @@ pub fn print<K, D>(
             .join("|");
         nodes.insert(ptr.raw_number(), format!("\"{node_text}\""));
 
-        for n in (0..page.len()).map(|idx| page.child[idx].unwrap()) {
+        for n in (0..page.len()).map(|idx| page.child[idx].expect("BUG")) {
             edges.push((ptr.raw_number(), n.raw_number()));
             if !page.is_leaf() {
                 print_inner(rt.reborrow(), n, nodes, edges, k, old);

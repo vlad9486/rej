@@ -190,10 +190,7 @@ impl NodePage {
         } else if range.len() == 1 {
             Ok(range.start)
         } else {
-            panic!(
-                "two identical keys detected {}",
-                std::str::from_utf8(&key.bytes).unwrap()
-            );
+            panic!("BUG: two identical keys detected {:?}", key.bytes);
         }
     }
 

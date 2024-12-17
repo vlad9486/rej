@@ -68,9 +68,12 @@ impl MetadataPage {
 
                 let idx = offset / P;
                 let mut offset = offset % P;
-                let mut pointers = array[idx..].iter();
+                let mut pointers = array[idx..].iter().copied();
                 while !buf.is_empty() {
-                    let page = view.page(pointers.next().unwrap().unwrap());
+                    let Some(ptr) = pointers.next().flatten() else {
+                        break;
+                    };
+                    let page = view.page(ptr);
                     let l = (P - offset).min(buf.len());
                     buf[..l].clone_from_slice(&page[offset..(offset + l)]);
                     buf = &mut buf[l..];
