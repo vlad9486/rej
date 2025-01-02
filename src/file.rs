@@ -1,13 +1,9 @@
 use std::{
     fs, io,
     path::Path,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        RwLock, RwLockReadGuard,
-    },
+    sync::atomic::{AtomicU32, Ordering},
 };
 
-use memmap2::Mmap;
 use fs4::fs_std::FileExt;
 
 use super::{
@@ -20,7 +16,6 @@ use super::cipher::{self, Cipher, CipherError, Params, CRYPTO_SIZE, EncryptedPag
 #[derive(Default, Clone)]
 pub struct IoOptions {
     pub direct_write: bool,
-    pub mmap_populate: bool,
     #[cfg(test)]
     pub simulator: Simulator,
 }
@@ -56,12 +51,12 @@ impl IoOptions {
 }
 
 pub struct FileIo {
-    cfg: IoOptions,
     file: fs::File,
-    file_len: AtomicU32,
     write_counter: AtomicU32,
-    mapped: RwLock<Mmap>,
     cipher: Cipher,
+    regular_file: bool,
+    #[cfg(test)]
+    simulator: Simulator,
 }
 
 impl FileIo {
@@ -72,27 +67,27 @@ impl FileIo {
         cfg: IoOptions,
         params: Params,
     ) -> Result<Self, CipherError> {
-        let file = utils::open_file(path, params.create(), cfg.direct_write)?;
-        file.lock_exclusive()?;
+        use std::os::unix::fs::FileTypeExt;
 
-        if params.create() {
-            file.set_len(CRYPTO_SIZE as u64)?;
+        let file = utils::open_file(path, params.create(), cfg.direct_write)?;
+        let metadata = file.metadata()?;
+        let regular_file = !metadata.file_type().is_block_device();
+        if regular_file {
+            file.lock_exclusive()?;
+            if params.create() {
+                file.set_len(CRYPTO_SIZE as u64)?;
+            }
         }
 
-        let map = utils::mmap(&file, cfg.mmap_populate)?;
-
-        let cipher = Cipher::new(&file, &map, params)?;
-
-        let file_len = AtomicU32::new((file.metadata()?.len() / PAGE_SIZE) as u32);
-        let mapped = RwLock::new(map);
+        let cipher = Cipher::new(&file, params)?;
 
         Ok(FileIo {
-            cfg,
             file,
-            file_len,
             write_counter: AtomicU32::new(0),
-            mapped,
             cipher,
+            regular_file,
+            #[cfg(test)]
+            simulator: cfg.simulator,
         })
     }
 
@@ -114,9 +109,8 @@ impl FileIo {
         {
             use rand::RngCore;
 
-            let simulator = self.cfg.simulator;
-            if old == simulator.crash_at {
-                if simulator.mess_page {
+            if old == self.simulator.crash_at {
+                if self.simulator.mess_page {
                     let mut data = [0; PAGE_SIZE as usize];
                     rand::thread_rng().fill_bytes(&mut data);
                     utils::write_at(&self.file, &data, offset).unwrap_or_default();
@@ -132,35 +126,27 @@ impl FileIo {
         self.file.sync_all()
     }
 
-    pub fn grow<T>(&self, n: u32) -> io::Result<Option<PagePtr<T>>> {
-        let mut lock = self.mapped.write().expect("poisoned");
+    pub fn grow<T>(&self, old: u32, n: u32) -> io::Result<Option<PagePtr<T>>> {
+        if self.regular_file {
+            self.file
+                .set_len((old + n + Self::CRYPTO_PAGES) as u64 * PAGE_SIZE)?;
+        }
 
-        let old_len = self.file_len.load(Ordering::SeqCst);
-
-        self.file.set_len((old_len + n) as u64 * PAGE_SIZE)?;
-        self.file_len.store(old_len + n, Ordering::SeqCst);
-        *lock = utils::mmap(&self.file, self.cfg.mmap_populate)?;
-
-        let n = old_len - Self::CRYPTO_PAGES;
         #[cfg(feature = "cipher")]
-        self._write(n, &[0; PAGE_SIZE as usize])?;
+        for i in 0..n {
+            self._write(old + i, &[0; PAGE_SIZE as usize])?;
+        }
 
-        Ok(PagePtr::from_raw_number(n))
+        Ok(PagePtr::from_raw_number(old))
     }
 
     pub fn set_pages(&self, pages: u32) -> io::Result<()> {
-        let pages = pages + Self::CRYPTO_PAGES;
-
-        let mut lock = self.mapped.write().expect("poisoned");
-        self.file.set_len((pages as u64) * PAGE_SIZE)?;
-        self.file_len.store(pages, Ordering::SeqCst);
-        *lock = utils::mmap(&self.file, self.cfg.mmap_populate)?;
+        if self.regular_file {
+            self.file
+                .set_len((pages + Self::CRYPTO_PAGES) as u64 * PAGE_SIZE)?;
+        }
 
         Ok(())
-    }
-
-    pub fn pages(&self) -> u32 {
-        self.file_len.load(Ordering::SeqCst) - Self::CRYPTO_PAGES
     }
 
     pub fn writes(&self) -> u32 {
@@ -179,7 +165,7 @@ impl AbstractIo for FileIo {
     type Viewer<'a> = PageView<'a>;
 
     fn read(&self) -> Self::Viewer<'_> {
-        PageView(self.mapped.read().expect("poisoned"), &self.cipher)
+        PageView(&self.file, &self.cipher)
     }
 
     fn write_bytes(&self, ptr: impl Into<Option<PagePtr<()>>>, bytes: &[u8]) -> io::Result<()> {
@@ -187,7 +173,7 @@ impl AbstractIo for FileIo {
     }
 }
 
-pub struct PageView<'a>(RwLockReadGuard<'a, Mmap>, &'a Cipher);
+pub struct PageView<'a>(&'a fs::File, &'a Cipher);
 
 impl AbstractViewer for PageView<'_> {
     type Page<'a, T>
@@ -201,7 +187,10 @@ impl AbstractViewer for PageView<'_> {
         T: PlainData + 'a,
     {
         let n = ptr.into().map_or(0, PagePtr::raw_number);
-        let offset = (u64::from(n) * PAGE_SIZE) as usize + CRYPTO_SIZE;
-        DecryptedPage::new(&self.0[offset..][..(PAGE_SIZE as usize)], self.1, n)
+        let offset = (u64::from(n) * PAGE_SIZE) + CRYPTO_SIZE as u64;
+        let mut page = Box::new([0; PAGE_SIZE as usize]);
+        // TODO: how to handle this? introduce a cache
+        utils::read_at(&self.0, page.as_mut(), offset).expect("reading should not fail");
+        DecryptedPage::new(page, self.1, n)
     }
 }

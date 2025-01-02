@@ -51,11 +51,11 @@ impl Wal {
                     orphan: None,
                 };
                 let page = RecordPage::new(inner);
-                let ptr = file.grow(1)?;
+                let ptr = file.grow(pos, 1)?;
 
                 file.write(ptr, &page)?;
             }
-            let head = file.grow(1)?.expect("must yield some");
+            let head = file.grow(Self::SIZE, 1)?.expect("must yield some");
 
             file.sync()?;
 
@@ -63,7 +63,7 @@ impl Wal {
                 seq: (Self::SIZE - 1).into(),
                 garbage: FreelistCache::empty(),
                 cache: FreelistCache::empty(),
-                size: file.pages(),
+                size: Self::SIZE + 1,
                 __padding: 0,
                 freelist: None,
                 head,
@@ -116,9 +116,9 @@ pub struct WalLock<'a>(MutexGuard<'a, RecordSeq>);
 
 impl WalLock<'_> {
     pub fn stats(&self, file: &FileIo) -> DbStats {
-        let total = file.pages() - Wal::SIZE;
+        let total = self.0.size - Wal::SIZE;
         let cached = self.0.cache.len();
-        let free = self.freelist_size(file);
+        let free = self.freelist_size(file) + self.0.garbage.len();
         let used = total - cached - free;
         let seq = self.0.seq;
 
@@ -191,20 +191,21 @@ impl WalLock<'_> {
             }
         }
         drop(view);
-        if !self.0.cache.is_full() {
+        let freelist_change = self.0.freelist != freelist;
+        self.0.freelist = freelist;
+
+        let resize = !self.0.cache.is_full();
+        if resize {
             let ptr = file
-                .grow(self.0.cache.capacity())?
+                .grow(self.0.size, self.0.cache.capacity())?
                 .expect("grow must yield value");
+            self.0.size += self.0.cache.capacity();
             for i in 0..self.0.cache.capacity() {
                 self.0.cache.put(ptr.add(i));
             }
         }
 
-        let size = file.pages();
-
-        if self.0.freelist != freelist || self.0.size != size {
-            self.0.freelist = freelist;
-            self.0.size = size;
+        if freelist_change || resize {
             self.write(file)?;
         }
 

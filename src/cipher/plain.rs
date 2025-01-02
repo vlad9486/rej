@@ -1,9 +1,8 @@
 use std::{fs, io, marker::PhantomData, ops::Deref};
 
-use memmap2::Mmap;
 use thiserror::Error;
 
-use super::runtime::PlainData;
+use super::{page::PAGE_SIZE, runtime::PlainData};
 
 pub struct Cipher;
 
@@ -36,8 +35,8 @@ pub enum CipherError {
 pub const CRYPTO_SIZE: usize = 0;
 
 impl Cipher {
-    pub fn new(file: &fs::File, map: &Mmap, params: Params) -> Result<Self, CipherError> {
-        let _ = (file, map, params);
+    pub fn new(file: &fs::File, params: Params) -> Result<Self, CipherError> {
+        let _ = (file, params);
         Ok(Self)
     }
 }
@@ -48,8 +47,8 @@ pub fn shred(seed: &[u8]) -> Result<Vec<u8>, CipherError> {
 }
 
 pub struct DecryptedPage<'a, T> {
-    page: &'a [u8],
-    phantom_data: PhantomData<T>,
+    page: Box<[u8; PAGE_SIZE as usize]>,
+    phantom_data: PhantomData<&'a T>,
 }
 
 pub struct EncryptedPage<'a> {
@@ -57,11 +56,11 @@ pub struct EncryptedPage<'a> {
 }
 
 impl<'a, T> DecryptedPage<'a, T> {
-    pub fn new(slice: &'a [u8], cipher: &Cipher, n: u32) -> Self {
+    pub fn new(page: Box<[u8; PAGE_SIZE as usize]>, cipher: &Cipher, n: u32) -> Self {
         let &Cipher = cipher;
         let _ = n;
         DecryptedPage {
-            page: slice,
+            page,
             phantom_data: PhantomData,
         }
     }
@@ -82,7 +81,7 @@ where
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        T::as_this(self.page)
+        T::as_this(self.page.as_ref())
     }
 }
 

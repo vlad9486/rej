@@ -31,7 +31,7 @@ fn scan() {
                 if actual_table_id != table_id {
                     break;
                 }
-                log::info!("{}", hex::encode(&key));
+                log::debug!("{}", hex::encode(&key));
                 let expected = expected.next().unwrap();
                 let value = value.read_to_vec();
                 assert_eq!(key, value);

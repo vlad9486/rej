@@ -2,7 +2,7 @@ use std::{fs, panic, path::Path, sync::Arc};
 
 use tempdir::TempDir;
 
-use crate::{ext, Db, DbError, DbStats, IoOptions, wal::FreelistCache, Params};
+use crate::{ext, Db, DbError, DbStats, IoOptions, Params};
 
 fn populate(db: Db) -> Result<DbStats, DbError> {
     let data = |s| (s..128u8).collect::<Vec<u8>>();
@@ -27,16 +27,17 @@ fn populate(db: Db) -> Result<DbStats, DbError> {
 // TODO: proper check
 fn check(db: Db) -> bool {
     let db = Arc::new(db);
-    let mut it = ext::iter(db.clone(), 0, b"");
-    let cnt = (&mut it).count();
     let stats = db.stats();
+    db.print(|k| std::str::from_utf8(k).unwrap().to_owned());
+    let it = ext::iter(db.clone(), 0, b"");
+    let cnt = it.count();
+    log::debug!("{cnt}, {stats:?}");
 
-    stats.cached == FreelistCache::SIZE
-        && (false
-            || (cnt == 0 && stats.used <= 2)
-            || (cnt == 1 && stats.used <= 4)
-            || (cnt == 2 && stats.used <= 7)
-            || (cnt == 3 && stats.used <= 8))
+    false
+        || (cnt == 0 && stats.used <= 1)
+        || (cnt == 1 && stats.used <= 3)
+        || (cnt == 2 && stats.used <= 6)
+        || (cnt == 3 && stats.used <= 7)
 }
 
 fn recovery_test<const MESS_PAGE: bool>() {

@@ -39,39 +39,41 @@ impl EntryInner {
         }
     }
 
-    pub fn has_next(&self, _view: &impl AbstractViewer) -> bool {
-        self.stack
-            .iter()
-            .chain(Some(&self.leaf))
-            .rev()
-            .find(|level| level.idx + 1 < level.node.len())
-            .is_some()
+    pub fn has_value(&self) -> bool {
+        self.leaf.idx < self.leaf.node.len()
     }
 
-    pub fn next(&mut self, view: &impl AbstractViewer) {
-        if self.leaf.idx + 1 < self.leaf.node.len() {
-            self.leaf.idx += 1;
+    pub fn next(it: &mut Option<Self>, view: &impl AbstractViewer) {
+        let Some(this) = it else {
+            return;
+        };
+
+        if this.leaf.idx + 1 < this.leaf.node.len() {
+            this.leaf.idx += 1;
             return;
         } else {
-            while let Some(mut current) = self.stack.pop() {
+            while let Some(mut current) = this.stack.pop() {
                 if current.idx + 1 < current.node.len() {
                     current.idx += 1;
-                    self.stack.push(current);
+                    this.stack.push(current);
                     break;
                 }
             }
-            let last = self.stack.last().expect("check `has_next` before use");
-            let mut ptr = last.node.child[last.idx].expect("check `has_next` before use");
+            let Some(last) = this.stack.last() else {
+                *it = None;
+                return;
+            };
+            let mut ptr = last.node.child[last.idx].expect("must not fail");
 
             loop {
                 let node = *view.page(ptr);
                 if node.is_leaf() {
                     let idx = 0;
-                    self.leaf = Level { ptr, node, idx };
+                    this.leaf = Level { ptr, node, idx };
                     break;
                 } else {
                     let idx = 0;
-                    self.stack.push(Level { ptr, node, idx });
+                    this.stack.push(Level { ptr, node, idx });
                     ptr = node.child[idx].unwrap_or_else(|| panic!("{idx}"));
                 }
             }

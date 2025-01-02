@@ -1,6 +1,8 @@
 use super::runtime;
 #[cfg(feature = "cipher")]
 use super::{utils, page};
+#[cfg(not(feature = "cipher"))]
+use super::page;
 
 #[cfg(feature = "cipher")]
 mod adiantum;

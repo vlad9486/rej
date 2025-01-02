@@ -22,16 +22,12 @@ impl<'a> Entry<'a> {
     pub fn into_db_iter(self) -> DbIterator {
         match self {
             Self::Occupied(v) => {
-                let view = v.file.read();
-                DbIterator {
-                    inner: v.inner.has_next(&view).then_some(v.inner),
-                }
+                let inner = Some(v.inner);
+                DbIterator { inner }
             }
             Self::Vacant(v) => {
-                let view = v.file.read();
-                DbIterator {
-                    inner: v.inner.has_next(&view).then_some(v.inner),
-                }
+                let inner = v.inner.has_value().then_some(v.inner);
+                DbIterator { inner }
             }
         }
     }
@@ -87,7 +83,6 @@ impl<'a> Vacant<'a> {
         let (alloc, _) = wal_lock.cache_mut();
         let ptr = alloc.alloc();
         self.file.write(ptr, &MetadataPage::empty())?;
-        wal_lock.fill_cache(file)?;
 
         let (alloc, free) = wal_lock.cache_mut();
         let mut storage = Default::default();
@@ -233,19 +228,14 @@ impl Db {
         let inner = it.inner.as_mut()?;
         let view = self.file.read();
         let key = inner.key(&view);
-        let (table_id, k) = (key.table_id, key.bytes.into_owned());
-
         let value = Value {
             ptr: inner.meta(),
             file: &self.file,
         };
 
-        inner.next(&view);
-        if !inner.has_next(&view) {
-            it.inner = None;
-        }
+        btree::EntryInner::next(&mut it.inner, &view);
 
-        Some((table_id, k, value))
+        Some((key.table_id, key.bytes.into_owned(), value))
     }
 
     pub fn stats(&self) -> DbStats {

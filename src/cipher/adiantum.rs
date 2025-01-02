@@ -1,7 +1,5 @@
 use std::{fs, io, marker::PhantomData, ops::Deref};
 
-use memmap2::Mmap;
-
 use {
     adiantum::cipher::{zeroize::Zeroize, KeyInit},
     aes::Aes256,
@@ -107,7 +105,7 @@ fn password_aead(secret: Secret<'_>, salt: [u8; 16]) -> Result<ChaCha20Poly1305,
 }
 
 impl Cipher {
-    pub fn new(file: &fs::File, map: &Mmap, params: Params<'_>) -> Result<Self, CipherError> {
+    pub fn new(file: &fs::File, params: Params<'_>) -> Result<Self, CipherError> {
         match params {
             Params::Create { secret, seed } => {
                 file.set_len(CRYPTO_SIZE as u64)?;
@@ -117,10 +115,7 @@ impl Cipher {
             }
             Params::Open { secret } => {
                 let mut blob = vec![0; CRYPTO_SIZE];
-                if map.len() < CRYPTO_SIZE {
-                    return Err(CipherError::BadKeyBlob);
-                }
-                blob.clone_from_slice(&map[..CRYPTO_SIZE]);
+                utils::read_at(file, &mut blob, 0)?;
                 Self::open(blob, secret)
             }
         }
@@ -221,9 +216,7 @@ pub struct EncryptedPage<'a> {
 }
 
 impl<T> DecryptedPage<'_, T> {
-    pub fn new(slice: &[u8], cipher: &Cipher, n: u32) -> Self {
-        let mut page = Box::new([0; PAGE_SIZE as usize]);
-        page[..slice.len()].clone_from_slice(slice);
+    pub fn new(mut page: Box<[u8; PAGE_SIZE as usize]>, cipher: &Cipher, n: u32) -> Self {
         cipher.0.decrypt(page.as_mut_slice(), &n.to_le_bytes());
         DecryptedPage {
             page,
