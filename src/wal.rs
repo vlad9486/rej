@@ -290,8 +290,15 @@ impl RecordPage {
         RecordPage { checksum, inner }
     }
 
+    fn check_old(&self) -> Option<&RecordSeq> {
+        let l = 0xc98;
+        (self.checksum == crc64::crc64(0, &self.inner.as_bytes()[..l])).then_some(&self.inner)
+    }
+
     fn check(&self) -> Option<&RecordSeq> {
-        (self.checksum == crc64::crc64(0, self.inner.as_bytes())).then_some(&self.inner)
+        (self.checksum == crc64::crc64(0, self.inner.as_bytes()))
+            .then_some(&self.inner)
+            .or_else(|| self.check_old())
     }
 }
 
