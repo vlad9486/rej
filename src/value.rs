@@ -31,6 +31,17 @@ impl MetadataPage {
         self.len as usize
     }
 
+    pub fn put_at(&mut self, offset: usize, buf: &[u8]) {
+        match &mut self.data {
+            Data::Immediately(array) => {
+                array[offset..][..buf.len()].clone_from_slice(buf);
+                self.len = self.len.max((offset + buf.len()) as u64);
+            }
+            Data::Indirect(_) => unimplemented!(),
+        }
+    }
+
+    // TODO: rework big value
     pub fn put_data(
         &mut self,
         alloc: &mut impl Alloc,

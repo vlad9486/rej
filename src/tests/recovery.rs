@@ -6,21 +6,20 @@ use crate::{ext, Db, DbError, DbStats, IoOptions, wal::FreelistCache, Params};
 
 fn populate(db: Db) -> Result<DbStats, DbError> {
     let data = |s| (s..128u8).collect::<Vec<u8>>();
-    db.entry(0, b"some key 1, long")
+    let value = db
+        .entry(0, b"some key 1, long")
         .vacant()
         .unwrap()
-        .insert()?
-        .rewrite(&data(10))?;
-    db.entry(0, b"some key 6, too                long")
+        .insert()?;
+    db.rewrite(value, &data(10))?;
+    let value = db
+        .entry(0, b"some key 6, too                long")
         .vacant()
         .unwrap()
-        .insert()?
-        .rewrite(&data(20))?;
-    db.entry(0, b"some key 3")
-        .vacant()
-        .unwrap()
-        .insert()?
-        .rewrite(&data(30))?;
+        .insert()?;
+    db.rewrite(value, &data(20))?;
+    let value = db.entry(0, b"some key 3").vacant().unwrap().insert()?;
+    db.rewrite(value, &data(30))?;
 
     Ok(db.stats())
 }

@@ -1,6 +1,6 @@
 [package]
 name = "rej"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 description = "Minimalistic database"
 license = "MIT"
@@ -10,13 +10,13 @@ name = "main"
 harness = false
 
 [dev-dependencies]
-env_logger = { version = "0.11.5" }
+env_logger = { version = "0.11.6" }
 tempdir = { version = "0.3.7" }
 rand = { version = "0.8.5" }
 criterion = { version = "0.5.1" }
 
 [target.'cfg(unix)'.dependencies]
-libc = { version = "0.2.168" }
+libc = { version = "0.2.169" }
 
 [dependencies]
 fs4 = { version = "0.12.0" }

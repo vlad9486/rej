@@ -90,13 +90,8 @@ fn remove_all() {
     with_db(0x123, |db, rng| {
         let mut keys = (0..17).map(|i| vec![i]).collect::<Vec<_>>();
         for key in &keys {
-            db.entry(5, key)
-                .vacant()
-                .unwrap()
-                .insert()
-                .unwrap()
-                .rewrite(key)
-                .unwrap()
+            let value = db.entry(5, key).vacant().unwrap().insert().unwrap();
+            db.rewrite(value, key).unwrap()
         }
         let printer = |key: &[u8]| key[0];
         db.print(printer);
@@ -114,7 +109,6 @@ fn remove_all() {
                 .remove()
                 .unwrap();
             assert_eq!(value.read_to_vec(), key.clone());
-            drop(value);
             db.print(printer);
         }
     })

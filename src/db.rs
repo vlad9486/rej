@@ -1,19 +1,17 @@
-use std::{io, path::Path};
+use std::{io, mem, path::Path};
 
 use thiserror::Error;
 
 use super::{
-    page::PagePtr,
+    page::{PagePtr, RawPtr},
     runtime::{AbstractIo, AbstractViewer, Rt, Alloc, Free},
-    cipher::CipherError,
+    cipher::{CipherError, Params},
     file::{FileIo, IoOptions},
     btree,
     node::Key,
     wal::{Wal, WalLock, WalError, DbStats},
     value::MetadataPage,
 };
-
-use super::cipher::Params;
 
 pub enum Entry<'a> {
     Occupied(Occupied<'a>),
@@ -59,11 +57,10 @@ pub struct Occupied<'a> {
     file: &'a FileIo,
 }
 
+#[derive(Clone, Copy)]
 pub struct Value<'a> {
     ptr: PagePtr<MetadataPage>,
-    lock: WalLock<'a>,
     file: &'a FileIo,
-    orphan: bool,
 }
 
 pub struct Vacant<'a> {
@@ -99,33 +96,11 @@ impl<'a> Vacant<'a> {
         rt.flush()?;
         wal_lock.new_head(self.file, new_head)?;
 
-        Ok(Value {
-            ptr,
-            lock,
-            file,
-            orphan: false,
-        })
+        Ok(Value { ptr, file })
     }
 }
 
 impl Value<'_> {
-    /// # Panics
-    /// if buf length is bigger than `1536 kiB`
-    pub fn rewrite(&mut self, buf: &[u8]) -> Result<(), DbError> {
-        let wal_lock = &mut self.lock;
-        let (alloc, free) = wal_lock.cache_mut();
-
-        let mut page = *self.file.read().page(self.ptr);
-        page.deallocate(free);
-        page.put_data(alloc, self.file, buf)?;
-        self.file.write(self.ptr, &page)?;
-        self.file.sync()?;
-
-        wal_lock.fill_cache(self.file)?;
-
-        Ok(())
-    }
-
     pub fn length(&self) -> usize {
         self.file.read().page(self.ptr).len()
     }
@@ -142,34 +117,13 @@ impl Value<'_> {
         value.read(&view, 0, &mut buf);
         buf
     }
-
-    pub fn get_key(&self, entry: &Occupied) -> Vec<u8> {
-        let view = self.file.read();
-        entry.inner.key(&view).bytes.into_owned()
-    }
-}
-
-impl Drop for Value<'_> {
-    fn drop(&mut self) {
-        if self.orphan {
-            let (_, free) = self.lock.cache_mut();
-            self.file.read().page(self.ptr).deallocate(free);
-            free.free(self.ptr);
-            self.lock.collect_garbage(self.file).unwrap_or_default();
-        }
-    }
 }
 
 impl<'a> Occupied<'a> {
     pub fn into_value(self) -> Value<'a> {
         let ptr = self.inner.meta();
-        let Occupied { lock, file, .. } = self;
-        Value {
-            ptr,
-            lock,
-            file,
-            orphan: false,
-        }
+        let Occupied { file, .. } = self;
+        Value { ptr, file }
     }
 
     pub fn remove(self) -> Result<Value<'a>, DbError> {
@@ -182,20 +136,19 @@ impl<'a> Occupied<'a> {
 
         let ptr = inner.meta();
 
+        let old = mem::replace(wal_lock.orphan_mut(), Some(ptr.cast()));
         let (alloc, free) = wal_lock.cache_mut();
         let mut storage = Default::default();
         let mut rt = Rt::new(alloc, free, file, &mut storage);
         let new_head = inner.remove(rt.reborrow())?;
         rt.flush()?;
 
+        if let Some(old) = old {
+            free.free(old.cast::<MetadataPage>());
+        }
         wal_lock.new_head(file, new_head)?;
 
-        Ok(Value {
-            ptr,
-            lock,
-            file,
-            orphan: true,
-        })
+        Ok(Value { ptr, file })
     }
 }
 
@@ -276,38 +229,69 @@ impl Db {
         }
     }
 
-    pub fn next(&self, it: &mut DbIterator) -> Option<(u32, Vec<u8>, Vec<u8>)> {
+    pub fn next<'a>(&'a self, it: &mut DbIterator) -> Option<(u32, Vec<u8>, Value<'a>)> {
         let inner = it.inner.as_mut()?;
         let view = self.file.read();
-        let (table_id, k, v) = kv(&view, inner);
+        let key = inner.key(&view);
+        let (table_id, k) = (key.table_id, key.bytes.into_owned());
+
+        let value = Value {
+            ptr: inner.meta(),
+            file: &self.file,
+        };
 
         inner.next(&view);
         if !inner.has_next(&view) {
             it.inner = None;
         }
 
-        Some((table_id, k, v))
+        Some((table_id, k, value))
     }
 
     pub fn stats(&self) -> DbStats {
         self.wal.lock().stats(&self.file)
     }
-}
 
-fn kv(view: &impl AbstractViewer, inner: &btree::EntryInner) -> (u32, Vec<u8>, Vec<u8>) {
-    let ptr = inner.meta();
-    let value = view.page(ptr);
-    let mut buf = vec![0; value.len()];
-    value.read(view, 0, &mut buf);
-    let key = inner.key(view);
-    (key.table_id, key.bytes.into_owned(), buf)
+    /// # Panics
+    /// if buf length is bigger than `1536 kiB`
+    pub fn rewrite(&self, value: Value<'_>, buf: &[u8]) -> Result<(), DbError> {
+        let mut wal_lock = self.wal.lock();
+        let (alloc, free) = wal_lock.cache_mut();
+
+        let mut page = *value.file.read().page(value.ptr);
+        page.deallocate(free);
+        page.put_data(alloc, value.file, buf)?;
+        self.file.write(value.ptr, &page)?;
+        self.file.sync()?;
+
+        wal_lock.fill_cache(value.file)?;
+
+        Ok(())
+    }
+
+    pub fn write_at(&self, value: Value<'_>, offset: usize, buf: &[u8]) -> Result<(), DbError> {
+        let mut page = *value.file.read().page(value.ptr);
+        page.put_at(offset, buf);
+        value.file.write(value.ptr, &page)?;
+        value.file.sync()?;
+
+        Ok(())
+    }
 }
 
 pub mod ext {
     use std::sync::Arc;
 
-    use super::{DbIterator, AbstractIo};
+    use super::{DbIterator, AbstractIo, AbstractViewer, btree};
     pub use super::{Db, DbError, Entry};
+
+    fn va(view: &impl AbstractViewer, inner: &btree::EntryInner) -> Vec<u8> {
+        let ptr = inner.meta();
+        let value = view.page(ptr);
+        let mut buf = vec![0; value.len()];
+        value.read(view, 0, &mut buf);
+        buf
+    }
 
     pub fn get(db: &Db, table_id: u32, key: &[u8]) -> Option<Vec<u8>> {
         Some(
@@ -320,8 +304,8 @@ pub mod ext {
 
     pub fn put(db: &Db, table_id: u32, key: &[u8], buf: &[u8]) -> Result<(), DbError> {
         match db.entry(table_id, key) {
-            Entry::Occupied(v) => v.into_value().rewrite(buf),
-            Entry::Vacant(v) => v.insert()?.rewrite(buf),
+            Entry::Occupied(v) => db.rewrite(v.into_value(), buf),
+            Entry::Vacant(v) => db.rewrite(v.insert()?, buf),
         }
     }
 
@@ -339,12 +323,12 @@ pub mod ext {
         let x = match db.entry(table_id, key) {
             Entry::Occupied(v) => {
                 let view = v.file.read();
-                let bytes = super::kv(&view, &v.inner).1;
+                let bytes = va(&view, &v.inner);
                 let (new, x) = match f(bytes) {
                     Ok(v) => v,
                     Err(err) => return Ok(Err(err)),
                 };
-                v.into_value().rewrite(&new)?;
+                db.rewrite(v.into_value(), &new)?;
                 x
             }
             Entry::Vacant(v) => {
@@ -352,7 +336,7 @@ pub mod ext {
                     Ok(v) => v,
                     Err(err) => return Ok(Err(err)),
                 };
-                v.insert()?.rewrite(&new)?;
+                db.rewrite(v.insert()?, &new)?;
                 x
             }
         };
@@ -382,7 +366,7 @@ pub mod ext {
             self.db
                 .next(&mut self.inner)
                 .filter(|(table_id, _, _)| *table_id == self.table_id)
-                .map(|(_, k, v)| (k, v))
+                .map(|(_, k, v)| (k, v.read_to_vec()))
         }
     }
 }

@@ -48,6 +48,7 @@ impl Wal {
                     __padding: 0,
                     freelist: None,
                     head,
+                    orphan: None,
                 };
                 let page = RecordPage::new(inner);
                 let ptr = file.grow(1)?;
@@ -66,6 +67,7 @@ impl Wal {
                 __padding: 0,
                 freelist: None,
                 head,
+                orphan: None,
             }));
             s.lock().fill_cache(file)?;
 
@@ -95,6 +97,7 @@ impl Wal {
             let stats = lock.stats(file);
             log::info!("did open database, will unroll log, stats: {stats:?}");
             lock.unroll(file, view)?;
+            lock.clear_orphan(file)?;
             lock.collect_garbage(file)?;
             lock.fill_cache(file)?;
             drop(lock);
@@ -208,7 +211,19 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    pub fn collect_garbage(&mut self, file: &FileIo) -> Result<(), WalError> {
+    fn clear_orphan(&mut self, file: &FileIo) -> Result<(), WalError> {
+        let mut freelist = self.0.freelist;
+        if let Some(ptr) = self.0.orphan.take().map(PagePtr::cast) {
+            let page = FreePage { next: freelist };
+            file.write(ptr, &page)?;
+            freelist = Some(ptr);
+        }
+        self.0.freelist = freelist;
+
+        Ok(())
+    }
+
+    fn collect_garbage(&mut self, file: &FileIo) -> Result<(), WalError> {
         log::debug!("collect garbage, will free {} pages", self.0.garbage.len());
 
         let mut freelist = self.0.freelist;
@@ -242,6 +257,10 @@ impl WalLock<'_> {
     pub fn cache_mut(&mut self) -> (&mut FreelistCache, &mut FreelistCache) {
         let inner = self.0.deref_mut();
         (&mut inner.cache, &mut inner.garbage)
+    }
+
+    pub fn orphan_mut(&mut self) -> &mut Option<PagePtr<()>> {
+        &mut self.0.orphan
     }
 
     fn freelist_size(&self, file: &FileIo) -> u32 {
@@ -286,6 +305,7 @@ struct RecordSeq {
     __padding: u32,
     freelist: Option<PagePtr<FreePage>>,
     head: PagePtr<()>,
+    orphan: Option<PagePtr<()>>,
 }
 
 #[derive(Clone, Copy)]
