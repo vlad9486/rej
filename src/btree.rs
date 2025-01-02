@@ -8,10 +8,8 @@ use super::{
 };
 
 pub struct EntryInner {
-    ptr: PagePtr<NodePage>,
-    leaf: NodePage,
     stack: Vec<Level>,
-    idx: usize,
+    leaf: Level,
 }
 
 struct Level {
@@ -25,7 +23,7 @@ impl EntryInner {
         let mut stack = Vec::<Level>::with_capacity(6);
         let mut ptr = root;
 
-        let leaf = loop {
+        let node = loop {
             let node = *view.page(ptr);
             if node.is_leaf() {
                 break node;
@@ -35,36 +33,31 @@ impl EntryInner {
                 ptr = node.child[idx].unwrap_or_else(|| panic!("{idx}"));
             }
         };
-        let pos = leaf.search(view, key);
+        let pos = node.search(view, key);
         let occupied = pos.is_ok();
         let idx = pos.unwrap_or_else(|idx| idx);
-        (
-            EntryInner {
-                ptr,
-                leaf,
-                stack,
-                idx,
-            },
-            occupied,
-        )
+        let leaf = Level { ptr, node, idx };
+        (EntryInner { stack, leaf }, occupied)
     }
 
     pub fn has_next(&self, _view: &impl AbstractViewer) -> bool {
-        self.idx < self.leaf.len()
+        self.leaf.idx < self.leaf.node.len()
         // TODO: jump on neighbor node
     }
 
     pub fn next(&mut self, _view: &impl AbstractViewer) {
-        self.idx += 1;
+        self.leaf.idx += 1;
         // TODO: jump on neighbor node
     }
 
     pub fn meta(&self) -> PagePtr<MetadataPage> {
-        self.leaf.child[self.idx].expect("must be here").cast()
+        self.leaf.node.child[self.leaf.idx]
+            .expect("must be here")
+            .cast()
     }
 
     pub fn key<'c>(&self, view: &impl AbstractViewer) -> Key<'c> {
-        self.leaf.get_key_old(view, self.idx)
+        self.leaf.node.get_key_old(view, self.leaf.idx)
     }
 
     pub fn insert(
@@ -74,18 +67,19 @@ impl EntryInner {
         key: &Key<'_>,
     ) -> io::Result<PagePtr<NodePage>> {
         let EntryInner {
-            mut ptr,
             mut leaf,
             mut stack,
-            idx,
         } = self;
 
-        rt.realloc(&mut ptr);
+        rt.realloc(&mut leaf.ptr);
 
-        leaf.realloc_keys(rt.reborrow());
-        let mut split = leaf.insert(rt.reborrow(), meta.cast(), idx, key, false);
-        rt.io.write(ptr, &leaf)?;
+        leaf.node.realloc_keys(rt.reborrow());
+        let mut split = leaf
+            .node
+            .insert(rt.reborrow(), meta.cast(), leaf.idx, key, false);
+        rt.io.write(leaf.ptr, &leaf.node)?;
 
+        let mut ptr = leaf.ptr;
         while let Some(mut level) = stack.pop() {
             rt.realloc(&mut level.ptr);
 
@@ -118,19 +112,21 @@ impl EntryInner {
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
     ) -> io::Result<PagePtr<NodePage>> {
         let EntryInner {
-            mut ptr,
             mut leaf,
             mut stack,
-            idx,
         } = self;
 
-        rt.realloc(&mut ptr);
-        let mut underflow = !leaf.can_donate();
-        leaf.realloc_keys(rt.reborrow());
-        let (_, _) = leaf.remove(rt.reborrow(), idx, false).expect("just find");
-        rt.io.write(ptr, &leaf)?;
+        rt.realloc(&mut leaf.ptr);
+        let mut underflow = !leaf.node.can_donate();
+        leaf.node.realloc_keys(rt.reborrow());
+        let (_, _) = leaf
+            .node
+            .remove(rt.reborrow(), leaf.idx, false)
+            .expect("just find");
+        rt.io.write(leaf.ptr, &leaf.node)?;
 
-        let mut prev = leaf;
+        let mut prev = leaf.node;
+        let mut ptr = leaf.ptr;
 
         let view = rt.io.read();
         while let Some(mut level) = stack.pop() {
