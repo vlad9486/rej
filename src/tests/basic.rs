@@ -1,8 +1,45 @@
 use std::iter;
 
-use rand::seq::SliceRandom;
+use rand::{seq::SliceRandom, Rng};
 
 use super::with_db;
+
+#[test]
+fn scan() {
+    with_db(0x123, |db, rng| {
+        let mut rand_key = |i| {
+            let mut v = rng.gen::<[u8; 16]>().to_vec();
+            v[0] = i;
+            v
+        };
+        let mut rand_key_list = |id: u32| (0..200).map(|i| (id, rand_key(i))).collect::<Vec<_>>();
+        let mut keys = Vec::with_capacity(300);
+        keys.extend(rand_key_list(0));
+        keys.extend(rand_key_list(1));
+        keys.extend(rand_key_list(2));
+        keys.shuffle(rng);
+        for (table_id, key) in &keys {
+            let value = db.entry(*table_id, key).vacant().unwrap().insert().unwrap();
+            db.rewrite(value, key).unwrap()
+        }
+
+        for table_id in 0..3 {
+            let start = 10 * (table_id as u8 + 1);
+            let mut it = db.entry(table_id, &[start]).into_db_iter();
+            let mut expected = start..200;
+            while let Some((actual_table_id, key, value)) = db.next(&mut it) {
+                if actual_table_id != table_id {
+                    break;
+                }
+                log::info!("{}", hex::encode(&key));
+                let expected = expected.next().unwrap();
+                let value = value.read_to_vec();
+                assert_eq!(key, value);
+                assert_eq!(key[0], expected);
+            }
+        }
+    })
+}
 
 #[test]
 fn keys() {

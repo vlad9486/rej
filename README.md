@@ -11,7 +11,6 @@ ACID is not tested well.
 ## TODO:
 
 * Protect metadata page against hardware failure.
-* Fix table scanning.
 * More tests.
 * More tests for ACID.
 

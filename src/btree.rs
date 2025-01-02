@@ -20,34 +20,62 @@ struct Level {
 
 impl EntryInner {
     pub fn new(view: &impl AbstractViewer, root: PagePtr<NodePage>, key: &Key<'_>) -> (Self, bool) {
-        let mut stack = Vec::<Level>::with_capacity(6);
+        let mut stack = Vec::with_capacity(6);
         let mut ptr = root;
 
-        let node = loop {
+        loop {
             let node = *view.page(ptr);
             if node.is_leaf() {
-                break node;
+                let pos = node.search(view, key);
+                let occupied = pos.is_ok();
+                let idx = pos.unwrap_or_else(|idx| idx);
+                let leaf = Level { ptr, node, idx };
+                return (EntryInner { stack, leaf }, occupied);
             } else {
                 let idx = node.search(view, key).unwrap_or_else(|idx| idx);
                 stack.push(Level { ptr, node, idx });
                 ptr = node.child[idx].unwrap_or_else(|| panic!("{idx}"));
             }
-        };
-        let pos = node.search(view, key);
-        let occupied = pos.is_ok();
-        let idx = pos.unwrap_or_else(|idx| idx);
-        let leaf = Level { ptr, node, idx };
-        (EntryInner { stack, leaf }, occupied)
+        }
     }
 
     pub fn has_next(&self, _view: &impl AbstractViewer) -> bool {
-        self.leaf.idx < self.leaf.node.len()
-        // TODO: jump on neighbor node
+        self.stack
+            .iter()
+            .chain(Some(&self.leaf))
+            .rev()
+            .find(|level| level.idx + 1 < level.node.len())
+            .is_some()
     }
 
-    pub fn next(&mut self, _view: &impl AbstractViewer) {
-        self.leaf.idx += 1;
-        // TODO: jump on neighbor node
+    pub fn next(&mut self, view: &impl AbstractViewer) {
+        if self.leaf.idx + 1 < self.leaf.node.len() {
+            self.leaf.idx += 1;
+            return;
+        } else {
+            while let Some(mut current) = self.stack.pop() {
+                if current.idx + 1 < current.node.len() {
+                    current.idx += 1;
+                    self.stack.push(current);
+                    break;
+                }
+            }
+            let last = self.stack.last().expect("check `has_next` before use");
+            let mut ptr = last.node.child[last.idx].expect("check `has_next` before use");
+
+            loop {
+                let node = *view.page(ptr);
+                if node.is_leaf() {
+                    let idx = 0;
+                    self.leaf = Level { ptr, node, idx };
+                    break;
+                } else {
+                    let idx = 0;
+                    self.stack.push(Level { ptr, node, idx });
+                    ptr = node.child[idx].unwrap_or_else(|| panic!("{idx}"));
+                }
+            }
+        }
     }
 
     pub fn meta(&self) -> PagePtr<MetadataPage> {
