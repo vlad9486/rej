@@ -20,7 +20,7 @@ fn scan() {
         keys.shuffle(rng);
         for (table_id, key) in &keys {
             let value = db.entry(*table_id, key).vacant().unwrap().insert().unwrap();
-            db.rewrite(value, key).unwrap()
+            db.rewrite(value, true, key).unwrap()
         }
 
         for table_id in 0..3 {
@@ -33,7 +33,7 @@ fn scan() {
                 }
                 log::debug!("{}", hex::encode(&key));
                 let expected = expected.next().unwrap();
-                let value = value.read_to_vec();
+                let value = value.read_to_vec(true, 0, 16);
                 assert_eq!(key, value);
                 assert_eq!(key[0], expected);
             }
@@ -128,7 +128,7 @@ fn remove_all() {
         let mut keys = (0..17).map(|i| vec![i]).collect::<Vec<_>>();
         for key in &keys {
             let value = db.entry(5, key).vacant().unwrap().insert().unwrap();
-            db.rewrite(value, key).unwrap()
+            db.rewrite(value, true, key).unwrap()
         }
         let printer = |key: &[u8]| key[0];
         db.print(printer);
@@ -145,7 +145,7 @@ fn remove_all() {
                 })
                 .remove()
                 .unwrap();
-            assert_eq!(value.read_to_vec(), key.clone());
+            assert_eq!(value.read_to_vec(true, 0, 1), key.clone());
             db.print(printer);
         }
     })

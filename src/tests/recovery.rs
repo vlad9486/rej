@@ -5,21 +5,27 @@ use tempdir::TempDir;
 use crate::{ext, Db, DbError, DbStats, IoOptions, Params};
 
 fn populate(db: Db) -> Result<DbStats, DbError> {
-    let data = |s| (s..128u8).collect::<Vec<u8>>();
+    let data = |s| {
+        128u64
+            .to_le_bytes()
+            .into_iter()
+            .chain(s..128u8)
+            .collect::<Vec<u8>>()
+    };
     let value = db
         .entry(0, b"some key 1, long")
         .vacant()
         .unwrap()
         .insert()?;
-    db.rewrite(value, &data(10))?;
+    db.rewrite(value, true, &data(10))?;
     let value = db
         .entry(0, b"some key 6, too                long")
         .vacant()
         .unwrap()
         .insert()?;
-    db.rewrite(value, &data(20))?;
+    db.rewrite(value, true, &data(20))?;
     let value = db.entry(0, b"some key 3").vacant().unwrap().insert()?;
-    db.rewrite(value, &data(30))?;
+    db.rewrite(value, true, &data(30))?;
 
     Ok(db.stats())
 }

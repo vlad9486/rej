@@ -53,17 +53,17 @@ pub struct Occupied<'a> {
     file: &'a FileIo,
 }
 
-#[derive(Clone, Copy)]
-pub struct Value<'a> {
-    ptr: PagePtr<MetadataPage>,
-    file: &'a FileIo,
-}
-
 pub struct Vacant<'a> {
     inner: btree::EntryInner,
     lock: WalLock<'a>,
     file: &'a FileIo,
     key: Key<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct Value<'a> {
+    ptr: PagePtr<MetadataPage>,
+    file: &'a FileIo,
 }
 
 pub struct DbIterator {
@@ -92,25 +92,6 @@ impl<'a> Vacant<'a> {
         wal_lock.new_head(self.file, new_head)?;
 
         Ok(Value { ptr, file })
-    }
-}
-
-impl Value<'_> {
-    pub fn length(&self) -> usize {
-        self.file.read().page(self.ptr).len()
-    }
-
-    pub fn read(&self, offset: usize, buf: &mut [u8]) {
-        let view = self.file.read();
-        view.page(self.ptr).read(&view, offset, buf);
-    }
-
-    pub fn read_to_vec(&self) -> Vec<u8> {
-        let view = self.file.read();
-        let value = view.page(self.ptr);
-        let mut buf = vec![0; value.len()];
-        value.read(&view, 0, &mut buf);
-        buf
     }
 }
 
@@ -144,6 +125,23 @@ impl<'a> Occupied<'a> {
         wal_lock.new_head(file, new_head)?;
 
         Ok(Value { ptr, file })
+    }
+}
+
+impl Value<'_> {
+    pub fn read(&self, plain: bool, offset: usize, buf: &mut [u8]) {
+        let view = self.file.read();
+        if plain {
+            view.page(self.ptr).read_plain(offset, buf);
+        } else {
+            view.page(self.ptr).read_indirect(&view, offset, buf);
+        }
+    }
+
+    pub fn read_to_vec(&self, plain: bool, offset: usize, len: usize) -> Vec<u8> {
+        let mut buf = vec![0; len];
+        self.read(plain, offset, &mut buf);
+        buf
     }
 }
 
@@ -244,24 +242,42 @@ impl Db {
 
     /// # Panics
     /// if buf length is bigger than `1536 kiB`
-    pub fn rewrite(&self, value: Value<'_>, buf: &[u8]) -> Result<(), DbError> {
-        let mut wal_lock = self.wal.lock();
-        let (alloc, free) = wal_lock.cache_mut();
-
+    pub fn rewrite(&self, value: Value<'_>, plain: bool, buf: &[u8]) -> Result<(), DbError> {
         let mut page = *value.file.read().page(value.ptr);
-        page.deallocate(free);
-        page.put_data(alloc, value.file, buf)?;
-        self.file.write(value.ptr, &page)?;
-        self.file.sync()?;
+        if plain {
+            page.put_plain_at(0, buf);
+            value.file.write(value.ptr, &page)?;
+            value.file.sync()?;
+        } else {
+            let mut wal_lock = self.wal.lock();
+            let (alloc, free) = wal_lock.cache_mut();
 
-        wal_lock.fill_cache(value.file)?;
+            page.deallocate_indirect(free);
+            page.put_indirect_at(alloc, value.file, 0, buf)?;
+            value.file.write(value.ptr, &page)?;
+            value.file.sync()?;
+
+            wal_lock.fill_cache(value.file)?;
+        }
 
         Ok(())
     }
 
-    pub fn write_at(&self, value: Value<'_>, offset: usize, buf: &[u8]) -> Result<(), DbError> {
+    pub fn write_at(
+        &self,
+        value: Value<'_>,
+        plain: bool,
+        offset: usize,
+        buf: &[u8],
+    ) -> Result<(), DbError> {
         let mut page = *value.file.read().page(value.ptr);
-        page.put_at(offset, buf);
+        if plain {
+            page.put_plain_at(offset, buf);
+        } else {
+            let mut wal_lock = self.wal.lock();
+            let (alloc, _free) = wal_lock.cache_mut();
+            page.put_indirect_at(alloc, value.file, offset, buf)?;
+        }
         value.file.write(value.ptr, &page)?;
         value.file.sync()?;
 
@@ -272,30 +288,47 @@ impl Db {
 pub mod ext {
     use std::sync::Arc;
 
-    use super::{DbIterator, AbstractIo, AbstractViewer, btree};
+    use super::{AbstractIo, AbstractViewer, DbIterator, Value};
     pub use super::{Db, DbError, Entry};
 
-    fn va(view: &impl AbstractViewer, inner: &btree::EntryInner) -> Vec<u8> {
-        let ptr = inner.meta();
-        let value = view.page(ptr);
-        let mut buf = vec![0; value.len()];
-        value.read(view, 0, &mut buf);
-        buf
+    fn decode_header(header: &[u8]) -> usize {
+        u64::from_le_bytes(header[..8].try_into().unwrap()) as usize
+    }
+
+    fn encode_header(header: &mut [u8], len: usize) {
+        header[..8].clone_from_slice(&(len as u64).to_le_bytes());
+    }
+
+    fn len(v: &Value<'_>) -> usize {
+        let view = v.file.read();
+        let metadata = view.page(v.ptr);
+        decode_header(metadata.header_plain())
     }
 
     pub fn get(db: &Db, table_id: u32, key: &[u8]) -> Option<Vec<u8>> {
-        Some(
-            db.entry(table_id, key)
-                .occupied()?
-                .into_value()
-                .read_to_vec(),
-        )
+        let v = db.entry(table_id, key).occupied()?.into_value();
+        let len = len(&v);
+        let plain = len <= 0xf00;
+
+        Some(v.read_to_vec(plain, 0, len))
     }
 
     pub fn put(db: &Db, table_id: u32, key: &[u8], buf: &[u8]) -> Result<(), DbError> {
-        match db.entry(table_id, key) {
-            Entry::Occupied(v) => db.rewrite(v.into_value(), buf),
-            Entry::Vacant(v) => db.rewrite(v.insert()?, buf),
+        let v = match db.entry(table_id, key) {
+            Entry::Occupied(v) => v.into_value(),
+            Entry::Vacant(v) => v.insert()?,
+        };
+        let len = len(&v);
+        if len <= 0xf00 {
+            let mut with_header = vec![0; buf.len() + 0x100];
+            encode_header(&mut with_header[..0x100], buf.len());
+            with_header[0x100..].clone_from_slice(buf);
+            db.rewrite(v, true, &with_header)
+        } else {
+            let mut header = [0; 0x100];
+            encode_header(&mut header, buf.len());
+            db.rewrite(v, true, &header)?;
+            db.rewrite(v, false, buf)
         }
     }
 
@@ -304,34 +337,6 @@ pub mod ext {
             Entry::Occupied(v) => v.remove().map(drop),
             Entry::Vacant(_) => Ok(()),
         }
-    }
-
-    pub fn edit<F, T, E>(db: &Db, table_id: u32, key: &[u8], f: F) -> Result<Result<T, E>, DbError>
-    where
-        F: Fn(Vec<u8>) -> Result<(Vec<u8>, T), E>,
-    {
-        let x = match db.entry(table_id, key) {
-            Entry::Occupied(v) => {
-                let view = v.file.read();
-                let bytes = va(&view, &v.inner);
-                let (new, x) = match f(bytes) {
-                    Ok(v) => v,
-                    Err(err) => return Ok(Err(err)),
-                };
-                db.rewrite(v.into_value(), &new)?;
-                x
-            }
-            Entry::Vacant(v) => {
-                let (new, x) = match f(vec![]) {
-                    Ok(v) => v,
-                    Err(err) => return Ok(Err(err)),
-                };
-                db.rewrite(v.insert()?, &new)?;
-                x
-            }
-        };
-
-        Ok(Ok(x))
     }
 
     pub struct DbIteratorOwned {
@@ -356,7 +361,11 @@ pub mod ext {
             self.db
                 .next(&mut self.inner)
                 .filter(|(table_id, _, _)| *table_id == self.table_id)
-                .map(|(_, k, v)| (k, v.read_to_vec()))
+                .map(|(_, k, v)| {
+                    let len = len(&v);
+                    let plain = len <= 0xf00;
+                    (k, v.read_to_vec(plain, 0, len))
+                })
         }
     }
 }

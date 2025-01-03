@@ -14,14 +14,14 @@ fn big_value() {
             .unwrap()
             .insert()
             .unwrap();
-        db.rewrite(value, &data).unwrap();
+        db.rewrite(value, false, &data).unwrap();
 
         let stored = db
             .entry(0, b"big_value")
             .occupied()
             .unwrap()
             .into_value()
-            .read_to_vec();
+            .read_to_vec(false, 0, 0x170023);
         assert_eq!(data, stored);
     });
 }
@@ -43,7 +43,7 @@ fn big() {
                 .unwrap()
                 .insert()
                 .unwrap();
-            db.rewrite(value, &i.to_le_bytes()).unwrap();
+            db.rewrite(value, true, &i.to_le_bytes()).unwrap();
         }
 
         for i in 0..NUM {
@@ -53,7 +53,7 @@ fn big() {
                 .occupied()
                 .unwrap()
                 .into_value()
-                .read_to_vec();
+                .read_to_vec(true, 0, 2);
             assert_eq!(vec, &i.to_le_bytes());
         }
 
@@ -67,7 +67,7 @@ fn big() {
                 .remove()
                 .unwrap();
             println!("deleted {key}");
-            assert_eq!(value.read_to_vec(), &i.to_le_bytes());
+            assert_eq!(value.read_to_vec(true, 0, 2), &i.to_le_bytes());
             assert!(db.entry(0, key.as_bytes()).vacant().is_some());
         }
     })
