@@ -154,6 +154,7 @@ impl WalLock<'_> {
         Ok(())
     }
 
+    #[allow(clippy::drop_non_drop)]
     fn unroll(&mut self, file: &FileIo, view: PageView<'_>) -> Result<(), WalError> {
         let mut reverse = self.0.seq;
 
@@ -173,6 +174,7 @@ impl WalLock<'_> {
         Ok(())
     }
 
+    #[allow(clippy::drop_non_drop)]
     pub fn fill_cache(&mut self, file: &FileIo) -> Result<(), WalError> {
         log::debug!(
             "fill cache, will allocate {} pages",

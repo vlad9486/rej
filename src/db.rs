@@ -13,12 +13,12 @@ use super::{
     value::MetadataPage,
 };
 
-pub enum Entry<'a> {
+pub enum Entry<'a, 'k> {
     Occupied(Occupied<'a>),
-    Vacant(Vacant<'a>),
+    Vacant(Vacant<'a, 'k>),
 }
 
-impl<'a> Entry<'a> {
+impl<'a, 'k> Entry<'a, 'k> {
     pub fn into_db_iter(self) -> DbIterator {
         match self {
             Self::Occupied(v) => {
@@ -39,7 +39,7 @@ impl<'a> Entry<'a> {
         }
     }
 
-    pub fn vacant(self) -> Option<Vacant<'a>> {
+    pub fn vacant(self) -> Option<Vacant<'a, 'k>> {
         match self {
             Self::Occupied(_) => None,
             Self::Vacant(v) => Some(v),
@@ -53,11 +53,11 @@ pub struct Occupied<'a> {
     file: &'a FileIo,
 }
 
-pub struct Vacant<'a> {
+pub struct Vacant<'a, 'k> {
     inner: btree::EntryInner,
     lock: WalLock<'a>,
     file: &'a FileIo,
-    key: Key<'a>,
+    key: Key<'k>,
 }
 
 #[derive(Clone, Copy)]
@@ -70,7 +70,7 @@ pub struct DbIterator {
     inner: Option<btree::EntryInner>,
 }
 
-impl<'a> Vacant<'a> {
+impl<'a> Vacant<'a, '_> {
     pub fn insert(self) -> Result<Value<'a>, DbError> {
         let Vacant {
             inner,
@@ -197,10 +197,7 @@ impl Db {
         btree::print(rt, old_head, k, true);
     }
 
-    pub fn entry<'a, 'b>(&'a self, table_id: u32, key: &'b [u8]) -> Entry<'a>
-    where
-        'b: 'a,
-    {
+    pub fn entry<'a, 'k>(&'a self, table_id: u32, key: &'k [u8]) -> Entry<'a, 'k> {
         let path = Key {
             table_id,
             bytes: key.into(),

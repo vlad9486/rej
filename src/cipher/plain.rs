@@ -55,7 +55,7 @@ pub struct EncryptedPage<'a> {
     page: &'a [u8],
 }
 
-impl<'a, T> DecryptedPage<'a, T> {
+impl<T> DecryptedPage<'_, T> {
     pub fn new(page: Box<[u8; PAGE_SIZE as usize]>, cipher: &Cipher, n: u32) -> Self {
         let &Cipher = cipher;
         let _ = n;

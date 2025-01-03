@@ -190,7 +190,7 @@ impl AbstractViewer for PageView<'_> {
         let offset = (u64::from(n) * PAGE_SIZE) + CRYPTO_SIZE as u64;
         let mut page = Box::new([0; PAGE_SIZE as usize]);
         // TODO: how to handle this? introduce a cache
-        utils::read_at(&self.0, page.as_mut(), offset).expect("reading should not fail");
+        utils::read_at(self.0, page.as_mut(), offset).expect("reading should not fail");
         DecryptedPage::new(page, self.1, n)
     }
 }

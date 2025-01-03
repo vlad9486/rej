@@ -50,7 +50,6 @@ impl EntryInner {
 
         if this.leaf.idx + 1 < this.leaf.node.len() {
             this.leaf.idx += 1;
-            return;
         } else {
             while let Some(mut current) = this.stack.pop() {
                 if current.idx + 1 < current.node.len() {
