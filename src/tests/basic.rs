@@ -33,7 +33,7 @@ fn scan() {
                 }
                 log::debug!("{}", hex::encode(&key));
                 let expected = expected.next().unwrap();
-                let value = value.read_to_vec(true, 0, 16);
+                let value = value.unwrap().read_to_vec(true, 0, 16);
                 assert_eq!(key, value);
                 assert_eq!(key[0], expected);
             }

@@ -1,7 +1,7 @@
 use std::{borrow::Cow, mem};
 
 use super::{
-    page::{PagePtr, RawPtr},
+    page::PagePtr,
     runtime::{PlainData, Alloc, Free, AbstractIo, AbstractViewer, Rt},
 };
 
@@ -242,7 +242,7 @@ impl NodePage {
     pub fn insert<'c>(
         &mut self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-        new_child_ptr: PagePtr<NodePage>,
+        new_child_ptr: Option<PagePtr<NodePage>>,
         idx: usize,
         key: &Key,
         rev: bool,
@@ -256,7 +256,7 @@ impl NodePage {
             self.table_id[i + 1] = self.table_id[i];
         }
 
-        self.child[idx] = Some(new_child_ptr);
+        self.child[idx] = new_child_ptr;
         if rev {
             self.child.swap(idx, idx + 1);
         }
@@ -307,7 +307,7 @@ impl NodePage {
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
         rev: bool,
-    ) -> Option<(PagePtr<NodePage>, Key<'c>)> {
+    ) -> (Option<PagePtr<NodePage>>, Key<'c>) {
         let new_len = self.len() - 1;
         self.len = new_len as u16;
 
@@ -342,7 +342,7 @@ impl NodePage {
             table_id: old_table_id,
             bytes: v.into(),
         };
-        old_ptr.map(|ptr| (ptr.cast(), key))
+        (old_ptr, key)
     }
 
     pub fn set_key<'d>(

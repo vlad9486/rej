@@ -1,8 +1,8 @@
-use std::{fs, panic, path::Path, sync::Arc};
+use std::{fs, panic, path::Path};
 
 use tempdir::TempDir;
 
-use crate::{ext, Db, DbError, DbStats, IoOptions, Params};
+use crate::{Db, DbError, DbStats, IoOptions, Params};
 
 fn populate(db: Db) -> Result<DbStats, DbError> {
     let data = |s| {
@@ -32,11 +32,13 @@ fn populate(db: Db) -> Result<DbStats, DbError> {
 
 // TODO: proper check
 fn check(db: Db) -> bool {
-    let db = Arc::new(db);
     let stats = db.stats();
     db.print(|k| std::str::from_utf8(k).unwrap().to_owned());
-    let it = ext::iter(db.clone(), 0, b"");
-    let cnt = it.count();
+    let mut it = db.entry(0, b"").into_db_iter();
+    let mut cnt = 0;
+    while db.next(&mut it).is_some() {
+        cnt += 1;
+    }
     log::debug!("{cnt}, {stats:?}");
 
     false

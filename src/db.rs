@@ -15,6 +15,7 @@ use super::{
 
 pub enum Entry<'a, 'k> {
     Occupied(Occupied<'a>),
+    Empty(EmptyCell<'a>),
     Vacant(Vacant<'a, 'k>),
 }
 
@@ -22,6 +23,10 @@ impl<'a, 'k> Entry<'a, 'k> {
     pub fn into_db_iter(self) -> DbIterator {
         match self {
             Self::Occupied(v) => {
+                let inner = Some(v.inner);
+                DbIterator { inner }
+            }
+            Self::Empty(v) => {
                 let inner = Some(v.inner);
                 DbIterator { inner }
             }
@@ -33,21 +38,37 @@ impl<'a, 'k> Entry<'a, 'k> {
     }
 
     pub fn occupied(self) -> Option<Occupied<'a>> {
-        match self {
-            Self::Occupied(v) => Some(v),
-            Self::Vacant(_) => None,
+        if let Self::Occupied(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub fn empty(self) -> Option<EmptyCell<'a>> {
+        if let Self::Empty(v) = self {
+            Some(v)
+        } else {
+            None
         }
     }
 
     pub fn vacant(self) -> Option<Vacant<'a, 'k>> {
-        match self {
-            Self::Occupied(_) => None,
-            Self::Vacant(v) => Some(v),
+        if let Self::Vacant(v) = self {
+            Some(v)
+        } else {
+            None
         }
     }
 }
 
 pub struct Occupied<'a> {
+    inner: btree::EntryInner,
+    lock: WalLock<'a>,
+    file: &'a FileIo,
+}
+
+pub struct EmptyCell<'a> {
     inner: btree::EntryInner,
     lock: WalLock<'a>,
     file: &'a FileIo,
@@ -71,7 +92,15 @@ pub struct DbIterator {
 }
 
 impl<'a> Vacant<'a, '_> {
+    pub fn insert_empty(self) -> Result<(), DbError> {
+        self.insert_inner::<false>().map(drop)
+    }
+
     pub fn insert(self) -> Result<Value<'a>, DbError> {
+        self.insert_inner::<true>().map(Option::unwrap)
+    }
+
+    fn insert_inner<const METADATA: bool>(self) -> Result<Option<Value<'a>>, DbError> {
         let Vacant {
             inner,
             mut lock,
@@ -83,6 +112,7 @@ impl<'a> Vacant<'a, '_> {
         let (alloc, _) = wal_lock.cache_mut();
         let ptr = alloc.alloc();
         self.file.write(ptr, &MetadataPage::empty())?;
+        let ptr = METADATA.then_some(ptr);
 
         let (alloc, free) = wal_lock.cache_mut();
         let mut storage = Default::default();
@@ -91,13 +121,41 @@ impl<'a> Vacant<'a, '_> {
         rt.flush()?;
         wal_lock.new_head(self.file, new_head)?;
 
-        Ok(Value { ptr, file })
+        Ok(ptr.map(|ptr| Value { ptr, file }))
+    }
+}
+
+impl<'a> EmptyCell<'a> {
+    pub fn occupy(mut self) -> Occupied<'a> {
+        let (alloc, _) = self.lock.cache_mut();
+        self.inner.set_meta(alloc.alloc());
+        let EmptyCell { inner, lock, file } = self;
+        Occupied { inner, lock, file }
+    }
+
+    pub fn remove(self) -> Result<(), DbError> {
+        let EmptyCell {
+            inner,
+            mut lock,
+            file,
+        } = self;
+        let wal_lock = &mut lock;
+
+        let (alloc, free) = wal_lock.cache_mut();
+        let mut storage = Default::default();
+        let mut rt = Rt::new(alloc, free, file, &mut storage);
+        let new_head = inner.remove(rt.reborrow())?;
+        rt.flush()?;
+
+        wal_lock.new_head(file, new_head)?;
+
+        Ok(())
     }
 }
 
 impl<'a> Occupied<'a> {
     pub fn into_value(self) -> Value<'a> {
-        let ptr = self.inner.meta();
+        let ptr = self.inner.meta().expect("must be metadata");
         let Occupied { file, .. } = self;
         Value { ptr, file }
     }
@@ -110,9 +168,9 @@ impl<'a> Occupied<'a> {
         } = self;
         let wal_lock = &mut lock;
 
-        let ptr = inner.meta();
-
+        let ptr = inner.meta().expect("must be metadata");
         let old = mem::replace(wal_lock.orphan_mut(), Some(ptr.cast()));
+
         let (alloc, free) = wal_lock.cache_mut();
         let mut storage = Default::default();
         let mut rt = Rt::new(alloc, free, file, &mut storage);
@@ -208,7 +266,11 @@ impl Db {
 
         let (inner, occupied) = btree::EntryInner::new(&view, lock.current_head(), &path);
         if occupied {
-            Entry::Occupied(Occupied { inner, lock, file })
+            if inner.meta().is_some() {
+                Entry::Occupied(Occupied { inner, lock, file })
+            } else {
+                Entry::Empty(EmptyCell { inner, lock, file })
+            }
         } else {
             Entry::Vacant(Vacant {
                 inner,
@@ -219,14 +281,12 @@ impl Db {
         }
     }
 
-    pub fn next<'a>(&'a self, it: &mut DbIterator) -> Option<(u32, Vec<u8>, Value<'a>)> {
+    pub fn next<'a>(&'a self, it: &mut DbIterator) -> Option<(u32, Vec<u8>, Option<Value<'a>>)> {
+        let file = &self.file;
         let inner = it.inner.as_mut()?;
-        let view = self.file.read();
+        let view = file.read();
         let key = inner.key(&view);
-        let value = Value {
-            ptr: inner.meta(),
-            file: &self.file,
-        };
+        let value = inner.meta().map(|ptr| Value { ptr, file });
 
         btree::EntryInner::next(&mut it.inner, &view);
 
@@ -279,90 +339,5 @@ impl Db {
         value.file.sync()?;
 
         Ok(())
-    }
-}
-
-pub mod ext {
-    use std::sync::Arc;
-
-    use super::{AbstractIo, AbstractViewer, DbIterator, Value};
-    pub use super::{Db, DbError, Entry};
-
-    fn decode_header(header: &[u8]) -> usize {
-        u64::from_le_bytes(header[..8].try_into().unwrap()) as usize
-    }
-
-    fn encode_header(header: &mut [u8], len: usize) {
-        header[..8].clone_from_slice(&(len as u64).to_le_bytes());
-    }
-
-    fn len(v: &Value<'_>) -> usize {
-        let view = v.file.read();
-        let metadata = view.page(v.ptr);
-        decode_header(metadata.header_plain())
-    }
-
-    pub fn get(db: &Db, table_id: u32, key: &[u8]) -> Option<Vec<u8>> {
-        let v = db.entry(table_id, key).occupied()?.into_value();
-        let len = len(&v);
-        let plain = len <= 0xf00;
-
-        Some(v.read_to_vec(plain, 0, len))
-    }
-
-    pub fn put(db: &Db, table_id: u32, key: &[u8], buf: &[u8]) -> Result<(), DbError> {
-        let v = match db.entry(table_id, key) {
-            Entry::Occupied(v) => v.into_value(),
-            Entry::Vacant(v) => v.insert()?,
-        };
-        let len = len(&v);
-        if len <= 0xf00 {
-            let mut with_header = vec![0; buf.len() + 0x100];
-            encode_header(&mut with_header[..0x100], buf.len());
-            with_header[0x100..].clone_from_slice(buf);
-            db.rewrite(v, true, &with_header)
-        } else {
-            let mut header = [0; 0x100];
-            encode_header(&mut header, buf.len());
-            db.rewrite(v, true, &header)?;
-            db.rewrite(v, false, buf)
-        }
-    }
-
-    pub fn del(db: &Db, table_id: u32, key: &[u8]) -> Result<(), DbError> {
-        match db.entry(table_id, key) {
-            Entry::Occupied(v) => v.remove().map(drop),
-            Entry::Vacant(_) => Ok(()),
-        }
-    }
-
-    pub struct DbIteratorOwned {
-        inner: DbIterator,
-        db: Arc<Db>,
-        table_id: u32,
-    }
-
-    pub fn iter(db: Arc<Db>, table_id: u32, key: &[u8]) -> DbIteratorOwned {
-        let inner = db.entry(table_id, key).into_db_iter();
-        DbIteratorOwned {
-            inner,
-            db,
-            table_id,
-        }
-    }
-
-    impl Iterator for DbIteratorOwned {
-        type Item = (Vec<u8>, Vec<u8>);
-
-        fn next(&mut self) -> Option<Self::Item> {
-            self.db
-                .next(&mut self.inner)
-                .filter(|(table_id, _, _)| *table_id == self.table_id)
-                .map(|(_, k, v)| {
-                    let len = len(&v);
-                    let plain = len <= 0xf00;
-                    (k, v.read_to_vec(plain, 0, len))
-                })
-        }
     }
 }

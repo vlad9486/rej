@@ -26,11 +26,6 @@ impl MetadataPage {
         }
     }
 
-    pub fn header_plain(&self) -> &[u8] {
-        let this = unsafe { &self.plain };
-        &this[..0x100]
-    }
-
     pub fn put_plain_at(&mut self, offset: usize, buf: &[u8]) {
         let this = unsafe { &mut self.plain };
         this[offset..][..buf.len()].clone_from_slice(buf);
