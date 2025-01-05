@@ -155,6 +155,10 @@ impl<'a> EmptyCell<'a> {
 
 impl<'a> Occupied<'a> {
     pub fn into_value(self) -> Value<'a> {
+        self.as_value()
+    }
+
+    pub fn as_value(&self) -> Value<'a> {
         let ptr = self.inner.meta().expect("must be metadata");
         let Occupied { file, .. } = self;
         Value { ptr, file }
