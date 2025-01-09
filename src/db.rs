@@ -1,4 +1,4 @@
-use std::{io, mem, path::Path};
+use std::{borrow::Cow, io, mem, path::Path};
 
 use thiserror::Error;
 
@@ -13,13 +13,13 @@ use super::{
     value::MetadataPage,
 };
 
-pub enum Entry<'a, 'k> {
+pub enum Entry<'a, K> {
     Occupied(Occupied<'a>),
     Empty(EmptyCell<'a>),
-    Vacant(Vacant<'a, 'k>),
+    Vacant(Vacant<'a, K>),
 }
 
-impl<'a, 'k> Entry<'a, 'k> {
+impl<'a, K> Entry<'a, K> {
     pub fn into_db_iter(self) -> DbIterator {
         match self {
             Self::Occupied(v) => {
@@ -53,7 +53,7 @@ impl<'a, 'k> Entry<'a, 'k> {
         }
     }
 
-    pub fn vacant(self) -> Option<Vacant<'a, 'k>> {
+    pub fn vacant(self) -> Option<Vacant<'a, K>> {
         if let Self::Vacant(v) = self {
             Some(v)
         } else {
@@ -74,11 +74,12 @@ pub struct EmptyCell<'a> {
     file: &'a FileIo,
 }
 
-pub struct Vacant<'a, 'k> {
+pub struct Vacant<'a, K> {
     inner: btree::EntryInner,
     lock: WalLock<'a>,
     file: &'a FileIo,
-    key: Key<'k>,
+    table_id: u32,
+    bytes: K,
 }
 
 #[derive(Clone, Copy)]
@@ -91,7 +92,10 @@ pub struct DbIterator {
     inner: Option<btree::EntryInner>,
 }
 
-impl<'a> Vacant<'a, '_> {
+impl<'a, K> Vacant<'a, K>
+where
+    K: AsRef<[u8]>,
+{
     pub fn insert_empty(self) -> Result<(), DbError> {
         self.insert_inner::<false>().map(drop)
     }
@@ -105,9 +109,15 @@ impl<'a> Vacant<'a, '_> {
             inner,
             mut lock,
             file,
-            key: path,
+            table_id,
+            bytes,
         } = self;
         let wal_lock = &mut lock;
+
+        let path = Key {
+            table_id,
+            bytes: Cow::Borrowed(bytes.as_ref()),
+        };
 
         let (alloc, _) = wal_lock.cache_mut();
         let ptr = alloc.alloc();
@@ -259,10 +269,13 @@ impl Db {
         btree::print(rt, old_head, k, true);
     }
 
-    pub fn entry<'a, 'k>(&'a self, table_id: u32, key: &'k [u8]) -> Entry<'a, 'k> {
+    pub fn entry<'a, K>(&'a self, table_id: u32, bytes: K) -> Entry<'a, K>
+    where
+        K: AsRef<[u8]>,
+    {
         let path = Key {
             table_id,
-            bytes: key.into(),
+            bytes: Cow::Borrowed(bytes.as_ref()),
         };
         let lock = self.wal.lock();
         let file = &self.file;
@@ -280,7 +293,8 @@ impl Db {
                 inner,
                 lock,
                 file,
-                key: path,
+                table_id,
+                bytes,
             })
         }
     }
