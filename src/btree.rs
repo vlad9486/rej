@@ -102,18 +102,14 @@ impl EntryInner {
             mut stack,
         } = self;
 
-        rt.realloc(&mut leaf.ptr);
-
         leaf.node.realloc_keys(rt.reborrow());
         let mut split =
             leaf.node
                 .insert(rt.reborrow(), meta.map(PagePtr::cast), leaf.idx, key, false);
-        rt.io.write(leaf.ptr, &leaf.node)?;
+        rt.set(&mut leaf.ptr, leaf.node);
 
         let mut ptr = leaf.ptr;
         while let Some(mut level) = stack.pop() {
-            rt.realloc(&mut level.ptr);
-
             level.node.child[level.idx] = Some(ptr);
             if let Some((key, neighbor)) = split {
                 level.node.realloc_keys(rt.reborrow());
@@ -121,19 +117,18 @@ impl EntryInner {
                     .node
                     .insert(rt.reborrow(), Some(neighbor), level.idx, &key, true);
             }
+            rt.set(&mut level.ptr, level.node);
 
-            rt.io.write(level.ptr, &level.node)?;
             ptr = level.ptr;
         }
 
         if let Some((key, neighbor)) = split {
-            let parent_ptr = rt.alloc.alloc();
-
             let mut root = NodePage::empty();
             root.append_child(ptr);
             root.insert(rt.reborrow(), Some(neighbor), 0, &key, true);
 
-            rt.io.write(parent_ptr, &root)?;
+            let parent_ptr = rt.create();
+            *rt.mutate(parent_ptr) = root;
             ptr = parent_ptr;
         }
 
@@ -149,10 +144,11 @@ impl EntryInner {
             mut stack,
         } = self;
 
-        rt.realloc(&mut leaf.ptr);
         let mut underflow = !leaf.node.can_donate();
         leaf.node.realloc_keys(rt.reborrow());
         let (_, _) = leaf.node.remove(rt.reborrow(), leaf.idx, false);
+
+        rt.realloc(&mut leaf.ptr);
         rt.io.write(leaf.ptr, &leaf.node)?;
 
         let mut prev = leaf.node;
@@ -188,14 +184,15 @@ impl EntryInner {
                         if donor.can_donate() && right.as_ref().map_or(true, |r| r.le(donor)) {
                             log::debug!("donate left");
 
-                            rt.realloc(&mut donor.ptr);
                             donor.node.realloc_keys(rt.reborrow());
                             let (donated_ptr, donated_key) =
                                 donor.node.remove(rt.reborrow(), donor.node.len() - 1, true);
                             assert!(donated_ptr.is_some(), "can donate");
                             prev.insert(rt.reborrow(), donated_ptr, 0, &donated_key, false);
-                            rt.io.write(donor.ptr, &donor.node)?;
                             rt.io.write(ptr, &prev)?;
+
+                            rt.realloc(&mut donor.ptr);
+                            rt.io.write(donor.ptr, &donor.node)?;
 
                             level.node.child[level.idx - 1] = Some(donor.ptr);
 
@@ -212,14 +209,15 @@ impl EntryInner {
                         if donor.can_donate() {
                             log::debug!("donate right");
 
-                            rt.realloc(&mut donor.ptr);
                             donor.node.realloc_keys(rt.reborrow());
                             let (donated_ptr, donated_key) =
                                 donor.node.remove(rt.reborrow(), 0, false);
                             assert!(donated_ptr.is_some(), "can donate");
                             prev.insert(rt.reborrow(), donated_ptr, K - 1, &donated_key, false);
-                            rt.io.write(donor.ptr, &donor.node)?;
                             rt.io.write(ptr, &prev)?;
+
+                            rt.realloc(&mut donor.ptr);
+                            rt.io.write(donor.ptr, &donor.node)?;
 
                             level.node.child[level.idx + 1] = Some(donor.ptr);
 

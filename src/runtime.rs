@@ -143,6 +143,14 @@ where
         self.storage.insert(ptr.raw_number(), v);
     }
 
+    pub fn set<T>(&mut self, ptr: &mut PagePtr<T>, v: T)
+    where
+        T: PlainData,
+    {
+        self.free.free(mem::replace(ptr, self.alloc.alloc::<T>()));
+        self.storage.insert(ptr.raw_number(), v.as_bytes().to_vec());
+    }
+
     pub fn mutate<T>(&mut self, ptr: PagePtr<T>) -> &mut T
     where
         T: PlainData,
