@@ -147,16 +147,13 @@ impl EntryInner {
         let mut underflow = !leaf.node.can_donate();
         leaf.node.realloc_keys(rt.reborrow());
         let (_, _) = leaf.node.remove(rt.reborrow(), leaf.idx, false);
-
-        rt.realloc(&mut leaf.ptr);
-        rt.io.write(leaf.ptr, &leaf.node)?;
+        rt.set(&mut leaf.ptr, leaf.node);
 
         let mut prev = leaf.node;
         let mut ptr = leaf.ptr;
 
         let view = rt.io.read();
         while let Some(mut level) = stack.pop() {
-            rt.realloc(&mut level.ptr);
             if underflow {
                 level.node.realloc_keys(rt.reborrow());
 
@@ -189,10 +186,8 @@ impl EntryInner {
                                 donor.node.remove(rt.reborrow(), donor.node.len() - 1, true);
                             assert!(donated_ptr.is_some(), "can donate");
                             prev.insert(rt.reborrow(), donated_ptr, 0, &donated_key, false);
-                            rt.io.write(ptr, &prev)?;
-
-                            rt.realloc(&mut donor.ptr);
-                            rt.io.write(donor.ptr, &donor.node)?;
+                            *rt.mutate(ptr) = prev;
+                            rt.set(&mut donor.ptr, donor.node);
 
                             level.node.child[level.idx - 1] = Some(donor.ptr);
 
@@ -214,10 +209,8 @@ impl EntryInner {
                                 donor.node.remove(rt.reborrow(), 0, false);
                             assert!(donated_ptr.is_some(), "can donate");
                             prev.insert(rt.reborrow(), donated_ptr, K - 1, &donated_key, false);
-                            rt.io.write(ptr, &prev)?;
-
-                            rt.realloc(&mut donor.ptr);
-                            rt.io.write(donor.ptr, &donor.node)?;
+                            *rt.mutate(ptr) = prev;
+                            rt.set(&mut donor.ptr, donor.node);
 
                             level.node.child[level.idx + 1] = Some(donor.ptr);
 
@@ -232,15 +225,15 @@ impl EntryInner {
                         if right.as_ref().map_or(true, |r| r.gt(neighbor)) {
                             log::debug!("merge left");
                             underflow = !level.node.can_donate();
-                            rt.realloc(&mut neighbor.ptr);
                             neighbor.node.realloc_keys(rt.reborrow());
                             level.idx -= 1;
                             let (_, key) = level.node.remove(rt.reborrow(), level.idx, false);
                             neighbor.node.merge(&prev, rt.reborrow(), key, false);
                             prev.free(rt.reborrow());
+
                             rt.free.free(ptr);
+                            rt.set(&mut neighbor.ptr, neighbor.node);
                             ptr = neighbor.ptr;
-                            rt.io.write(neighbor.ptr, &neighbor.node)?;
 
                             break;
                         }
@@ -258,7 +251,7 @@ impl EntryInner {
                         level.node.set_key(rt.reborrow(), level.idx, last_key);
                         neighbor.node.free(rt.reborrow());
                         rt.free.free(neighbor.ptr);
-                        rt.io.write(ptr, &prev)?;
+                        *rt.mutate(ptr) = prev;
 
                         break;
                     }
@@ -272,7 +265,7 @@ impl EntryInner {
                 rt.free.free(level.ptr);
             } else {
                 level.node.child[level.idx] = Some(ptr);
-                rt.io.write(level.ptr, &level.node)?;
+                rt.set(&mut level.ptr, level.node);
                 ptr = level.ptr;
                 prev = level.node;
             }

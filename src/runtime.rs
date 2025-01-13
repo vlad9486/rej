@@ -108,13 +108,6 @@ where
             storage,
         }
     }
-
-    pub fn realloc<T>(&mut self, ptr: &mut PagePtr<T>)
-    where
-        T: PlainData,
-    {
-        self.free.free(mem::replace(ptr, self.alloc.alloc()));
-    }
 }
 
 impl<A, F, Io> Rt<'_, A, F, Io>
