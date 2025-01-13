@@ -201,19 +201,24 @@ impl<'a> Occupied<'a> {
 }
 
 impl Value<'_> {
-    pub fn read(&self, plain: bool, offset: usize, buf: &mut [u8]) {
+    pub fn read(&self, offset: usize, buf: &mut [u8]) {
         let view = self.file.read();
-        if plain {
-            view.page(self.ptr).read_plain(offset, buf);
-        } else {
-            view.page(self.ptr).read_indirect(&view, offset, buf);
-        }
+        view.page(self.ptr).read_plain(offset, buf);
     }
 
-    pub fn read_to_vec(&self, plain: bool, offset: usize, len: usize) -> Vec<u8> {
+    pub fn read_to_vec(&self, offset: usize, len: usize) -> Vec<u8> {
         let mut buf = vec![0; len];
-        self.read(plain, offset, &mut buf);
+        self.read(offset, &mut buf);
         buf
+    }
+
+    pub fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), DbError> {
+        let mut page = *self.file.read().page(self.ptr);
+        page.put_plain_at(offset, buf);
+        self.file.write(self.ptr, &page)?;
+        self.file.sync()?;
+
+        Ok(())
     }
 }
 
@@ -313,49 +318,5 @@ impl Db {
 
     pub fn stats(&self) -> DbStats {
         self.wal.lock().stats(&self.file)
-    }
-
-    /// # Panics
-    /// if buf length is bigger than `1536 kiB`
-    pub fn rewrite(&self, value: Value<'_>, plain: bool, buf: &[u8]) -> Result<(), DbError> {
-        let mut page = *value.file.read().page(value.ptr);
-        if plain {
-            page.put_plain_at(0, buf);
-            value.file.write(value.ptr, &page)?;
-            value.file.sync()?;
-        } else {
-            let mut wal_lock = self.wal.lock();
-            let (alloc, free) = wal_lock.cache_mut();
-
-            page.deallocate_indirect(free);
-            page.put_indirect_at(alloc, value.file, 0, buf)?;
-            value.file.write(value.ptr, &page)?;
-            value.file.sync()?;
-
-            wal_lock.fill_cache(value.file)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn write_at(
-        &self,
-        value: Value<'_>,
-        plain: bool,
-        offset: usize,
-        buf: &[u8],
-    ) -> Result<(), DbError> {
-        let mut page = *value.file.read().page(value.ptr);
-        if plain {
-            page.put_plain_at(offset, buf);
-        } else {
-            let mut wal_lock = self.wal.lock();
-            let (alloc, _free) = wal_lock.cache_mut();
-            page.put_indirect_at(alloc, value.file, offset, buf)?;
-        }
-        value.file.write(value.ptr, &page)?;
-        value.file.sync()?;
-
-        Ok(())
     }
 }

@@ -12,20 +12,21 @@ fn populate(db: Db) -> Result<DbStats, DbError> {
             .chain(s..128u8)
             .collect::<Vec<u8>>()
     };
-    let value = db
-        .entry(0, b"some key 1, long")
+    db.entry(0, b"some key 1, long")
         .vacant()
         .unwrap()
-        .insert()?;
-    db.rewrite(value, true, &data(10))?;
-    let value = db
-        .entry(0, b"some key 6, too                long")
+        .insert()?
+        .write_at(0, &data(10))?;
+    db.entry(0, b"some key 6, too                long")
         .vacant()
         .unwrap()
-        .insert()?;
-    db.rewrite(value, true, &data(20))?;
-    let value = db.entry(0, b"some key 3").vacant().unwrap().insert()?;
-    db.rewrite(value, true, &data(30))?;
+        .insert()?
+        .write_at(0, &data(20))?;
+    db.entry(0, b"some key 3")
+        .vacant()
+        .unwrap()
+        .insert()?
+        .write_at(0, &data(30))?;
 
     Ok(db.stats())
 }

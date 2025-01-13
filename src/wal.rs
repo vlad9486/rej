@@ -98,7 +98,6 @@ impl Wal {
             log::info!("did open database, will unroll log, stats: {stats:?}");
             lock.unroll(file, view)?;
             lock.clear_orphan(file)?;
-            lock.collect_garbage(file)?;
             lock.fill_cache(file)?;
             drop(lock);
             log::info!("did unroll log");
@@ -176,12 +175,23 @@ impl WalLock<'_> {
 
     #[allow(clippy::drop_non_drop)]
     pub fn fill_cache(&mut self, file: &FileIo) -> Result<(), WalError> {
-        log::debug!(
-            "fill cache, will allocate {} pages",
-            self.0.cache.capacity()
-        );
+        loop {
+            if !self.0.cache.is_full() {
+                if let Some(ptr) = self.0.garbage.take() {
+                    self.0.cache.put(ptr);
+                    continue;
+                }
+            }
+
+            break;
+        }
 
         let mut freelist = self.0.freelist;
+        while let Some(ptr) = self.0.garbage.take() {
+            let page = FreePage { next: freelist };
+            file.write(ptr, &page)?;
+            freelist = Some(ptr);
+        }
 
         let view = file.read();
         while !self.0.cache.is_full() {
@@ -226,28 +236,9 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    fn collect_garbage(&mut self, file: &FileIo) -> Result<(), WalError> {
-        log::debug!("collect garbage, will free {} pages", self.0.garbage.len());
-
-        let mut freelist = self.0.freelist;
-        while let Some(ptr) = self.0.garbage.take() {
-            let page = FreePage { next: freelist };
-            file.write(ptr, &page)?;
-            freelist = Some(ptr);
-        }
-
-        if self.0.freelist != freelist {
-            self.0.freelist = freelist;
-            self.write(file)?;
-        }
-
-        Ok(())
-    }
-
     pub fn new_head<T>(&mut self, file: &FileIo, head: PagePtr<T>) -> Result<(), WalError> {
         self.0.head = head.cast();
         self.write(file)?;
-        self.collect_garbage(file)?;
         self.fill_cache(file)?;
 
         Ok(())

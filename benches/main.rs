@@ -47,13 +47,18 @@ fn insert(c: &mut Criterion) {
             let mut key = *b"key key key asd asd asd     ";
             for i in &indexes {
                 key[24..26].clone_from_slice(&i.to_le_bytes());
-                let value = db.entry(0, &key).vacant().unwrap().insert().unwrap();
-                db.write_at(value, true, 0, &[0, 1]).unwrap();
+                db.entry(0, &key)
+                    .vacant()
+                    .unwrap()
+                    .insert()
+                    .unwrap()
+                    .write_at(0, &[0, 1])
+                    .unwrap();
             }
             for i in 0..NUM {
                 key[24..26].clone_from_slice(&i.to_le_bytes());
                 let value = db.entry(0, &key).occupied().unwrap().into_value();
-                black_box(value.read_to_vec(true, 0, 2));
+                black_box(value.read_to_vec(0, 2));
             }
             black_box(db.stats());
         })
