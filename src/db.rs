@@ -119,14 +119,16 @@ where
             bytes: Cow::Borrowed(bytes.as_ref()),
         };
 
-        let (alloc, _) = wal_lock.cache_mut();
-        let ptr = alloc.alloc();
-        self.file.write(ptr, &MetadataPage::empty())?;
-        let ptr = METADATA.then_some(ptr);
-
         let (alloc, free) = wal_lock.cache_mut();
         let mut storage = Default::default();
         let mut rt = Rt::new(alloc, free, file, &mut storage);
+
+        let ptr = METADATA.then(|| {
+            let ptr = rt.create();
+            *rt.mutate::<MetadataPage>(ptr) = MetadataPage::empty();
+            ptr
+        });
+
         let new_head = inner.insert(rt.reborrow(), ptr, &path)?;
         rt.flush()?;
         wal_lock.new_head(self.file, new_head)?;

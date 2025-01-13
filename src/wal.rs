@@ -57,8 +57,6 @@ impl Wal {
             }
             let head = file.grow(Self::SIZE, 1)?.expect("must yield some");
 
-            file.sync()?;
-
             let s = Self(Mutex::new(RecordSeq {
                 seq: (Self::SIZE - 1).into(),
                 garbage: FreelistCache::empty(),
@@ -174,7 +172,7 @@ impl WalLock<'_> {
     }
 
     #[allow(clippy::drop_non_drop)]
-    pub fn fill_cache(&mut self, file: &FileIo) -> Result<(), WalError> {
+    fn fill_cache(&mut self, file: &FileIo) -> Result<(), WalError> {
         loop {
             if !self.0.cache.is_full() {
                 if let Some(ptr) = self.0.garbage.take() {
