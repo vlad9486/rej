@@ -32,34 +32,31 @@ fn insert(c: &mut Criterion) {
 
     let db = Db::new(&path, Default::default(), create_params).unwrap();
 
-    const NUM: u16 = 100;
-    let mut indexes = (0..NUM).collect::<Vec<_>>();
-
-    {
-        use rand::{rngs::StdRng, SeedableRng, seq::SliceRandom};
-        let mut rng = StdRng::seed_from_u64(0x123);
-
-        indexes.shuffle(&mut rng);
+    // prepare
+    let mut key = *b"preparation     preparation";
+    for i in 0..=255u8 {
+        key[24] = i;
+        db.entry(0, &key)
+            .vacant()
+            .unwrap()
+            .insert()
+            .unwrap()
+            .write_at(0, &[0, 1])
+            .unwrap();
     }
 
     c.bench_function("insert", |b| {
         b.iter(|| {
-            let mut key = *b"key key key asd asd asd     ";
-            for i in &indexes {
-                key[24..26].clone_from_slice(&i.to_le_bytes());
-                db.entry(0, &key)
-                    .vacant()
-                    .unwrap()
-                    .insert()
-                    .unwrap()
-                    .write_at(0, &[0, 1])
-                    .unwrap();
-            }
-            for i in 0..NUM {
-                key[24..26].clone_from_slice(&i.to_le_bytes());
-                let value = db.entry(0, &key).occupied().unwrap().into_value();
-                black_box(value.read_to_vec(0, 2));
-            }
+            let key = *b"key key key asd asd asd     ";
+            db.entry(0, &key)
+                .vacant()
+                .unwrap()
+                .insert()
+                .unwrap()
+                .write_at(0, &[0, 1])
+                .unwrap();
+            let value = db.entry(0, &key).occupied().unwrap().remove().unwrap();
+            black_box(value.read_to_vec(0, 2));
             black_box(db.stats());
         })
     });
