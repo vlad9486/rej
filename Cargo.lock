@@ -539,6 +539,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-uring"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5d5b4a5e02a58296749114728ea3644f9a4cd5669c243896e445b90bd299ad6"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "is-terminal"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -848,6 +859,7 @@ dependencies = [
  "fs4",
  "hex",
  "hkdf",
+ "io-uring",
  "libc",
  "log",
  "rand 0.8.5",

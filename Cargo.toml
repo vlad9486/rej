@@ -17,6 +17,7 @@ criterion = { version = "0.5.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2.169" }
+io-uring = { version = "0.7.3" }
 
 [dependencies]
 fs4 = { version = "0.12.0" }
