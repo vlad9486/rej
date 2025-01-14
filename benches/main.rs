@@ -30,7 +30,7 @@ fn insert(c: &mut Criterion) {
     #[cfg(not(feature = "cipher"))]
     let create_params = Params::Create;
 
-    let db = Db::new(&path, Default::default(), create_params).unwrap();
+    let db = Db::new(&path, create_params).unwrap();
 
     // prepare
     let mut key = *b"preparation     preparation";

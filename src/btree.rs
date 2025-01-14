@@ -184,12 +184,6 @@ impl EntryInner {
                             donor.node.realloc_keys(rt.reborrow());
                             let (donated_ptr, donated_key) =
                                 donor.node.remove(rt.reborrow(), donor.node.len() - 1, true);
-                            let d = u32::from_be_bytes(donated_key.bytes[..4].try_into().unwrap());
-                            assert!(
-                                donated_ptr.is_none() == (d == 1 || d == 2),
-                                "can donate {d} {}",
-                                donated_ptr.is_none()
-                            );
 
                             prev.insert(rt.reborrow(), donated_ptr, 0, &donated_key, false);
                             *rt.mutate(ptr) = prev;
@@ -213,12 +207,6 @@ impl EntryInner {
                             donor.node.realloc_keys(rt.reborrow());
                             let (donated_ptr, donated_key) =
                                 donor.node.remove(rt.reborrow(), 0, false);
-                            let d = u32::from_be_bytes(donated_key.bytes[..4].try_into().unwrap());
-                            assert!(
-                                donated_ptr.is_none() == (d == 1 || d == 2),
-                                "can donate {d} {}",
-                                donated_ptr.is_none()
-                            );
 
                             prev.insert(rt.reborrow(), donated_ptr, K - 1, &donated_key, false);
                             *rt.mutate(ptr) = prev;

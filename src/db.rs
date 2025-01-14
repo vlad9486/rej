@@ -6,7 +6,7 @@ use super::{
     page::{PagePtr, RawPtr},
     runtime::{AbstractIo, AbstractViewer, Rt, Alloc, Free},
     cipher::{CipherError, Params},
-    file::{FileIo, IoOptions},
+    file::FileIo,
     btree,
     node::Key,
     wal::{Wal, WalLock, WalError, DbStats},
@@ -240,9 +240,9 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn new(path: impl AsRef<Path>, cfg: IoOptions, params: Params) -> Result<Self, DbError> {
+    pub fn new(path: impl AsRef<Path>, params: Params) -> Result<Self, DbError> {
         let create = params.create();
-        let file = FileIo::new(path, cfg, params)?;
+        let file = FileIo::new(path, params)?;
         let wal = Wal::new(create, &file)?;
 
         Ok(Db { file, wal })
@@ -258,6 +258,17 @@ impl Db {
         self.file.crypt_shred(seed)?;
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn with_simulator(mut self, crash_at: u32, mess_page: bool) -> Self {
+        use super::file::Simulator;
+
+        self.file.simulator = Simulator {
+            crash_at,
+            mess_page,
+        };
+        self
     }
 
     #[cfg(test)]

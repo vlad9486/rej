@@ -25,7 +25,6 @@ pub use self::cipher::Secret;
 
 pub use self::{
     cipher::{Params, CipherError},
-    file::IoOptions,
     wal::{DbStats, WalError},
     db::{Db, DbError, DbIterator, Value, Entry, Occupied, Vacant},
 };

@@ -2,7 +2,7 @@ use std::{fs, panic, path::Path};
 
 use tempdir::TempDir;
 
-use crate::{Db, DbError, DbStats, IoOptions, Params};
+use crate::{Db, DbError, DbStats, Params};
 
 fn populate(db: Db) -> Result<DbStats, DbError> {
     let data = |s| {
@@ -56,24 +56,26 @@ fn recovery_test<const MESS_PAGE: bool>() {
     let dir = TempDir::new_in("target/tmp", "rej").unwrap();
     let path = dir.path().join("test-recovery");
 
-    let db = Db::new(&path, IoOptions::default(), Params::new_mock(true)).unwrap();
+    let db = Db::new(&path, Params::new_mock(true)).unwrap();
     drop(db);
 
-    let db = Db::new(&path, IoOptions::default(), Params::new_mock(false)).unwrap();
+    let db = Db::new(&path, Params::new_mock(false)).unwrap();
     let stats = populate(db).unwrap();
 
     for i in 0..(stats.writes - 1) {
-        crash_test(&path, IoOptions::simulator(i, MESS_PAGE));
+        crash_test(&path, i, MESS_PAGE);
     }
 }
 
-fn crash_test(path: &Path, cfg: IoOptions) {
+fn crash_test(path: &Path, crash_at: u32, mess_page: bool) {
     fs::remove_file(path).unwrap_or_default();
-    let db = Db::new(path, IoOptions::default(), Params::new_mock(true)).unwrap();
+    let db = Db::new(path, Params::new_mock(true)).unwrap();
     drop(db);
 
     let err = panic::catch_unwind(move || {
-        let db = Db::new(path, cfg, Params::new_mock(false)).unwrap();
+        let db = Db::new(path, Params::new_mock(false))
+            .unwrap()
+            .with_simulator(crash_at, mess_page);
         populate(db).unwrap();
     })
     .unwrap_err()
@@ -81,7 +83,7 @@ fn crash_test(path: &Path, cfg: IoOptions) {
     .unwrap();
     assert_eq!(*err, "intentional panic for test");
 
-    let db = Db::new(path, IoOptions::default(), Params::new_mock(false)).unwrap();
+    let db = Db::new(path, Params::new_mock(false)).unwrap();
     assert!(check(db));
 }
 

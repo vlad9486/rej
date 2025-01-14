@@ -13,13 +13,6 @@ use super::{
 };
 use super::cipher::{self, Cipher, CipherError, Params, CRYPTO_SIZE, EncryptedPage, DecryptedPage};
 
-#[derive(Default, Clone)]
-pub struct IoOptions {
-    pub direct_write: bool,
-    #[cfg(test)]
-    pub simulator: Simulator,
-}
-
 #[cfg(test)]
 #[derive(Clone, Copy)]
 pub struct Simulator {
@@ -37,39 +30,22 @@ impl Default for Simulator {
     }
 }
 
-#[cfg(test)]
-impl IoOptions {
-    pub fn simulator(crash_at: u32, mess_page: bool) -> Self {
-        IoOptions {
-            simulator: Simulator {
-                crash_at,
-                mess_page,
-            },
-            ..Default::default()
-        }
-    }
-}
-
 pub struct FileIo {
     file: fs::File,
     write_counter: AtomicU32,
     cipher: Cipher,
     regular_file: bool,
     #[cfg(test)]
-    simulator: Simulator,
+    pub simulator: Simulator,
 }
 
 impl FileIo {
     const CRYPTO_PAGES: u32 = (CRYPTO_SIZE as u64 / PAGE_SIZE) as u32;
 
-    pub fn new(
-        path: impl AsRef<Path>,
-        cfg: IoOptions,
-        params: Params,
-    ) -> Result<Self, CipherError> {
+    pub fn new(path: impl AsRef<Path>, params: Params) -> Result<Self, CipherError> {
         use std::os::unix::fs::FileTypeExt;
 
-        let file = utils::open_file(path, params.create(), cfg.direct_write)?;
+        let file = utils::open_file(path, params.create(), true)?;
         let metadata = file.metadata()?;
         let regular_file = !metadata.file_type().is_block_device();
         if regular_file {
@@ -87,7 +63,7 @@ impl FileIo {
             cipher,
             regular_file,
             #[cfg(test)]
-            simulator: cfg.simulator,
+            simulator: Simulator::default(),
         })
     }
 
