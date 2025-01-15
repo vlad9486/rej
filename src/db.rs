@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::{
     page::{PagePtr, RawPtr},
-    runtime::{AbstractIo, Rt, Alloc, Free, PBox},
+    runtime::{AbstractIo, Rt, Alloc, Free},
     cipher::{CipherError, Params},
     file::FileIo,
     btree,
@@ -204,9 +204,9 @@ impl<'a> Occupied<'a> {
 
 impl Value<'_> {
     pub fn read(&self, offset: usize, buf: &mut [u8]) {
-        let mut page = PBox::new(4096, [0; 0x1000]);
-        self.file
-            .read_page(self.ptr.cast(), &mut page)
+        let page = self
+            .file
+            .read_page(self.ptr.raw_number())
             .expect("read should not fail");
         buf.clone_from_slice(&page[offset..][..buf.len()]);
     }
@@ -218,10 +218,9 @@ impl Value<'_> {
     }
 
     pub fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), DbError> {
-        let mut page = PBox::new(4096, [0; 0x1000]);
-        self.file.read_page(self.ptr.cast(), &mut page)?;
+        let mut page = self.file.read_page(self.ptr.raw_number())?;
         page[offset..][..buf.len()].clone_from_slice(buf);
-        self.file.write_bytes(self.ptr.cast(), &mut *page)?;
+        self.file.write_bytes(self.ptr.raw_number(), page)?;
 
         Ok(())
     }

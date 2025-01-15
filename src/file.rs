@@ -1,15 +1,20 @@
 use std::{
+    collections::BTreeMap,
     fs, io,
     path::Path,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Mutex,
+    },
 };
 
 use fs4::fs_std::FileExt;
+use io_uring::IoUring;
 
 use super::{
     utils,
     page::{PagePtr, RawPtr, PAGE_SIZE},
-    runtime::AbstractIo,
+    runtime::{AbstractIo, PBox},
 };
 use super::cipher::{self, Cipher, CipherError, Params, CRYPTO_SIZE};
 
@@ -35,6 +40,7 @@ pub struct FileIo {
     write_counter: AtomicU32,
     cipher: Cipher,
     regular_file: bool,
+    cache: Mutex<Cache>,
     #[cfg(test)]
     pub simulator: Simulator,
 }
@@ -62,6 +68,7 @@ impl FileIo {
             write_counter: AtomicU32::new(0),
             cipher,
             regular_file,
+            cache: Mutex::new(Cache::default()),
             #[cfg(test)]
             simulator: Simulator::default(),
         })
@@ -115,7 +122,9 @@ impl FileIo {
             let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
 
             for i in 0..n {
-                self._write(old + i, &mut *page)?;
+                self.cipher.encrypt(&mut *page, old + i);
+                let offset = u64::from(old + i + Self::CRYPTO_PAGES) * PAGE_SIZE;
+                utils::write_at(&self.file, &*page, offset)?;
             }
         }
 
@@ -134,31 +143,90 @@ impl FileIo {
     pub fn writes(&self) -> u32 {
         self.write_counter.load(Ordering::SeqCst)
     }
-
-    fn _write(&self, n: u32, bytes: &mut [u8]) -> io::Result<()> {
-        let offset = u64::from(n) * PAGE_SIZE;
-        self.write_stats(offset);
-
-        self.cipher.encrypt(bytes, n);
-        utils::write_at(&self.file, &*bytes, offset + (CRYPTO_SIZE as u64))
-    }
 }
 
 impl AbstractIo for FileIo {
-    fn read_page(
-        &self,
-        ptr: impl Into<Option<PagePtr<()>>>,
-        page: &mut [u8; PAGE_SIZE as usize],
-    ) -> io::Result<()> {
-        let n = ptr.into().map_or(0, PagePtr::raw_number);
-        let offset = (u64::from(n) * PAGE_SIZE) + CRYPTO_SIZE as u64;
-        utils::read_at(&self.file, page, offset)?;
-        self.cipher.decrypt(page, n);
-
-        Ok(())
+    fn read_page(&self, n: u32) -> io::Result<PBox> {
+        self.cache
+            .lock()
+            .expect("poisoned")
+            .read(&self.file, &self.cipher, n)
     }
 
-    fn write_bytes(&self, ptr: impl Into<Option<PagePtr<()>>>, bytes: &mut [u8]) -> io::Result<()> {
-        self._write(ptr.into().map_or(0, PagePtr::raw_number), bytes)
+    fn write_bytes(&self, n: u32, page: PBox) -> io::Result<()> {
+        self.write_stats(u64::from(n) * PAGE_SIZE);
+
+        self.cache
+            .lock()
+            .expect("poisoned")
+            .write(&self.file, &self.cipher, n, page)
+    }
+
+    fn write_batch(&self, it: impl IntoIterator<Item = (u32, PBox)>) -> io::Result<()> {
+        self.cache.lock().expect("poisoned").write_batch(
+            &self.file,
+            &self.cipher,
+            it.into_iter().map(|(n, page)| {
+                self.write_stats(u64::from(n) * PAGE_SIZE);
+                (n, page)
+            }),
+        )
+    }
+}
+
+fn n_to_o(n: u32) -> u64 {
+    (u64::from(n) * PAGE_SIZE) + CRYPTO_SIZE as u64
+}
+
+pub struct Cache {
+    ring: IoUring,
+    inner: BTreeMap<u32, PBox>,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Cache {
+            ring: IoUring::new(16).unwrap(),
+            inner: BTreeMap::default(),
+        }
+    }
+}
+
+impl Cache {
+    fn write(&mut self, file: &fs::File, cipher: &Cipher, n: u32, page: PBox) -> io::Result<()> {
+        let _ = &mut self.inner;
+
+        let mut page = page;
+        cipher.encrypt(&mut *page, n);
+        utils::write_at(&file, &*page, n_to_o(n))
+    }
+
+    fn write_batch(
+        &mut self,
+        file: &fs::File,
+        cipher: &Cipher,
+        it: impl IntoIterator<Item = (u32, PBox)>,
+    ) -> io::Result<()> {
+        let _ = &mut self.inner;
+
+        utils::write_v_at(
+            file,
+            &mut self.ring,
+            it.into_iter().map(|(n, mut page)| {
+                cipher.encrypt(&mut *page, n);
+                (n_to_o(n), page.as_ptr())
+            }),
+        )
+    }
+
+    fn read(&mut self, file: &fs::File, cipher: &Cipher, n: u32) -> io::Result<PBox> {
+        let _ = &mut self.inner;
+
+        let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
+
+        utils::read_at(file, &mut *page, n_to_o(n))?;
+        cipher.decrypt(&mut *page, n);
+
+        Ok(page)
     }
 }

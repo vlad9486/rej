@@ -28,11 +28,6 @@ where
         let raw_ptr = (self as *const Self).cast();
         unsafe { slice::from_raw_parts(raw_ptr, mem::size_of::<Self>()) }
     }
-
-    fn as_bytes_mut(&mut self) -> &mut [u8] {
-        let raw_ptr = (self as *mut Self).cast();
-        unsafe { slice::from_raw_parts_mut(raw_ptr, mem::size_of::<Self>()) }
-    }
 }
 
 pub trait Alloc {
@@ -48,30 +43,32 @@ pub trait Free {
 }
 
 pub trait AbstractIo {
-    fn read_page(
-        &self,
-        ptr: impl Into<Option<PagePtr<()>>>,
-        page: &mut [u8; PAGE_SIZE as usize],
-    ) -> io::Result<()>;
+    fn read_page(&self, n: u32) -> io::Result<PBox>;
 
     fn read<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> T
     where
         T: PlainData + Copy,
     {
-        let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
-        self.read_page(ptr.into().map(PagePtr::cast), &mut page)
+        let page = self
+            .read_page(ptr.into().map_or(0, PagePtr::raw_number))
             .expect("read should not fail");
         *T::as_this(&*page)
     }
 
-    fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, mut page: T) -> io::Result<()>
+    fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, value: T) -> io::Result<()>
     where
         T: PlainData,
     {
-        self.write_bytes(ptr.into().map(PagePtr::cast), page.as_bytes_mut())
+        let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
+        let bytes = value.as_bytes();
+        page[..bytes.len()].clone_from_slice(bytes);
+
+        self.write_bytes(ptr.into().map_or(0, PagePtr::raw_number), page)
     }
 
-    fn write_bytes(&self, ptr: impl Into<Option<PagePtr<()>>>, bytes: &mut [u8]) -> io::Result<()>;
+    fn write_bytes(&self, ptr: u32, page: PBox) -> io::Result<()>;
+
+    fn write_batch(&self, it: impl Iterator<Item = (u32, PBox)>) -> io::Result<()>;
 }
 
 pub type PBox = ABox<[u8; PAGE_SIZE as usize], ConstAlign<{ PAGE_SIZE as usize }>>;
@@ -135,10 +132,10 @@ where
     where
         T: PlainData,
     {
-        let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
         // TODO: handle it
-        self.io
-            .read_page(ptr.cast(), &mut page)
+        let page = self
+            .io
+            .read_page(ptr.raw_number())
             .expect("read should not fail");
         self.free.free(mem::replace(ptr, self.alloc.alloc::<T>()));
         self.storage.insert(ptr.raw_number(), page);
@@ -177,11 +174,6 @@ where
     }
 
     pub fn flush(self) -> io::Result<()> {
-        for (n, mut page) in mem::take(self.storage) {
-            self.io
-                .write_bytes(PagePtr::from_raw_number(n), &mut *page)?;
-        }
-
-        Ok(())
+        self.io.write_batch(mem::take(self.storage).into_iter())
     }
 }
