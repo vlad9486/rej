@@ -255,6 +255,12 @@ impl Db {
         self.file.m_lock();
     }
 
+    pub fn flush(&self) -> Result<(), DbError> {
+        self.file.sync()?;
+
+        Ok(())
+    }
+
     /// Makes sense only for encrypted database
     pub fn crypt_shred(&self, seed: &[u8]) -> Result<(), DbError> {
         self.file.crypt_shred(seed)?;

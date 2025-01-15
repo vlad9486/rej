@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs, io,
+    fs, io, mem,
     path::Path,
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -68,7 +68,7 @@ impl FileIo {
             write_counter: AtomicU32::new(0),
             cipher,
             regular_file,
-            cache: Mutex::new(Cache::default()),
+            cache: Mutex::new(Cache::run()?),
             #[cfg(test)]
             simulator: Simulator::default(),
         })
@@ -106,7 +106,10 @@ impl FileIo {
     }
 
     pub fn sync(&self) -> io::Result<()> {
-        self.file.sync_all()
+        self.cache
+            .lock()
+            .expect("poisoned")
+            .flush(&self.file, &self.cipher)
     }
 
     pub fn grow<T>(&self, old: u32, n: u32) -> io::Result<Option<PagePtr<T>>> {
@@ -115,17 +118,12 @@ impl FileIo {
                 .set_len((old + n + Self::CRYPTO_PAGES) as u64 * PAGE_SIZE)?;
         }
 
-        #[cfg(feature = "cipher")]
-        {
-            use super::runtime::PBox;
+        use super::runtime::PBox;
 
-            let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
-
-            for i in 0..n {
-                self.cipher.encrypt(&mut *page, old + i);
-                let offset = u64::from(old + i + Self::CRYPTO_PAGES) * PAGE_SIZE;
-                utils::write_at(&self.file, &*page, offset)?;
-            }
+        let mut cache = self.cache.lock().expect("poisoned");
+        for i in old..(old + n) {
+            let page = PBox::new(4096, [0; PAGE_SIZE as usize]);
+            cache.write(&self.file, &self.cipher, i, page)?;
         }
 
         Ok(PagePtr::from_raw_number(old))
@@ -183,22 +181,35 @@ pub struct Cache {
     inner: BTreeMap<u32, PBox>,
 }
 
-impl Default for Cache {
-    fn default() -> Self {
-        Cache {
-            ring: IoUring::new(16).unwrap(),
+impl Cache {
+    fn run() -> io::Result<Self> {
+        let ring = IoUring::new(1024)?;
+        Ok(Cache {
+            ring,
             inner: BTreeMap::default(),
-        }
+        })
     }
 }
 
 impl Cache {
-    fn write(&mut self, file: &fs::File, cipher: &Cipher, n: u32, page: PBox) -> io::Result<()> {
-        let _ = &mut self.inner;
+    fn flush(&mut self, file: &fs::File, cipher: &Cipher) -> io::Result<()> {
+        let mut map = mem::take(&mut self.inner);
+        let it = map.iter_mut().map(|(n, page)| {
+            cipher.encrypt(&mut **page, *n);
+            (n_to_o(*n), page.as_ptr())
+        });
+        utils::write_v_at(file, &mut self.ring, it)?;
 
-        let mut page = page;
-        cipher.encrypt(&mut *page, n);
-        utils::write_at(&file, &*page, n_to_o(n))
+        Ok(())
+    }
+
+    fn write(&mut self, file: &fs::File, cipher: &Cipher, n: u32, page: PBox) -> io::Result<()> {
+        self.inner.insert(n, page);
+        if self.inner.len() > 256 {
+            self.flush(file, cipher)?;
+        }
+
+        Ok(())
     }
 
     fn write_batch(
@@ -207,26 +218,23 @@ impl Cache {
         cipher: &Cipher,
         it: impl IntoIterator<Item = (u32, PBox)>,
     ) -> io::Result<()> {
-        let _ = &mut self.inner;
+        self.inner.extend(it);
+        if self.inner.len() > 256 {
+            self.flush(file, cipher)?;
+        }
 
-        utils::write_v_at(
-            file,
-            &mut self.ring,
-            it.into_iter().map(|(n, mut page)| {
-                cipher.encrypt(&mut *page, n);
-                (n_to_o(n), page.as_ptr())
-            }),
-        )
+        Ok(())
     }
 
     fn read(&mut self, file: &fs::File, cipher: &Cipher, n: u32) -> io::Result<PBox> {
-        let _ = &mut self.inner;
+        if let Some(page) = self.inner.get(&n) {
+            return Ok(page.clone());
+        }
 
         let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
 
         utils::read_at(file, &mut *page, n_to_o(n))?;
         cipher.decrypt(&mut *page, n);
-
         Ok(page)
     }
 }

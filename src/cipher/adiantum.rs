@@ -115,7 +115,7 @@ impl Cipher {
                 Ok(cipher)
             }
             Params::Open { secret } => {
-                let mut blob = vec![0; CRYPTO_SIZE];
+                let mut blob = avec![[4096]| 0; CRYPTO_SIZE];
                 utils::read_at(file, &mut blob, 0)?;
                 Self::open(blob, secret)
             }
@@ -161,7 +161,10 @@ impl Cipher {
         Ok((cipher, full_buf))
     }
 
-    fn open(mut full_buf: Vec<u8>, secret: Secret<'_>) -> Result<Cipher, CipherError> {
+    fn open(
+        mut full_buf: AVec<u8, ConstAlign<4096>>,
+        secret: Secret<'_>,
+    ) -> Result<Cipher, CipherError> {
         use chacha20poly1305::aead::{AeadInPlace, generic_array::GenericArray};
         use sha3::Sha3_256;
         use hkdf::Hkdf;

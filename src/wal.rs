@@ -68,6 +68,7 @@ impl Wal {
                 orphan: None,
             }));
             s.lock().fill_cache(file)?;
+            file.sync()?;
 
             log::info!("did initialize empty database");
 
@@ -144,7 +145,6 @@ impl WalLock<'_> {
         self.next();
         let page = RecordPage::new(*self.0);
         file.write(self.ptr(), page)?;
-        file.sync()?;
 
         Ok(())
     }
