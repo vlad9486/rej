@@ -2,7 +2,7 @@ use std::io;
 
 use super::{
     page::{PagePtr, RawPtr},
-    runtime::{Alloc, Free, AbstractIo, AbstractViewer, Rt},
+    runtime::{Alloc, Free, AbstractIo, Rt},
     value::MetadataPage,
     node::{NodePage, Key, K},
 };
@@ -19,12 +19,12 @@ struct Level {
 }
 
 impl EntryInner {
-    pub fn new(view: &impl AbstractViewer, root: PagePtr<NodePage>, key: &Key<'_>) -> (Self, bool) {
+    pub fn new(view: &impl AbstractIo, root: PagePtr<NodePage>, key: &Key<'_>) -> (Self, bool) {
         let mut stack = Vec::with_capacity(6);
         let mut ptr = root;
 
         loop {
-            let node = *view.page(ptr);
+            let node = view.read(ptr);
             if node.is_leaf() {
                 let pos = node.search(view, key);
                 let occupied = pos.is_ok();
@@ -43,7 +43,7 @@ impl EntryInner {
         self.leaf.idx < self.leaf.node.len()
     }
 
-    pub fn next(it: &mut Option<Self>, view: &impl AbstractViewer) {
+    pub fn next(it: &mut Option<Self>, view: &impl AbstractIo) {
         let Some(this) = it else {
             return;
         };
@@ -65,7 +65,7 @@ impl EntryInner {
             let mut ptr = last.node.child[last.idx].expect("must not fail");
 
             loop {
-                let node = *view.page(ptr);
+                let node = view.read(ptr);
                 if node.is_leaf() {
                     let idx = 0;
                     this.leaf = Level { ptr, node, idx };
@@ -87,7 +87,7 @@ impl EntryInner {
         self.leaf.node.child[self.leaf.idx] = Some(meta.cast());
     }
 
-    pub fn key<'c>(&self, view: &impl AbstractViewer) -> Key<'c> {
+    pub fn key<'c>(&self, view: &impl AbstractIo) -> Key<'c> {
         self.leaf.node.get_key_old(view, self.leaf.idx)
     }
 
@@ -152,7 +152,6 @@ impl EntryInner {
         let mut prev = leaf.node;
         let mut ptr = leaf.ptr;
 
-        let view = rt.io.read();
         while let Some(mut level) = stack.pop() {
             if underflow {
                 level.node.realloc_keys(rt.reborrow());
@@ -161,14 +160,14 @@ impl EntryInner {
                     let ptr =
                         level.node.child[level.idx - 1].expect("left neighbor always present");
                     NodeWithPtr {
-                        node: *view.page(ptr),
+                        node: rt.io.read(ptr),
                         ptr,
                     }
                 });
                 let mut right = (level.idx < level.node.len() - 1)
                     .then(|| {
                         level.node.child[level.idx + 1].map(|ptr| NodeWithPtr {
-                            node: *view.page(ptr),
+                            node: rt.io.read(ptr),
                             ptr,
                         })
                     })
@@ -326,12 +325,11 @@ pub fn print<K, D>(
         K: Fn(&[u8]) -> D,
         D: std::fmt::Display,
     {
-        let view = rt.io.read();
-        let page = view.page(ptr);
+        let page = rt.io.read(ptr);
         let node_text = (0..(page.len() - usize::from(!page.is_leaf())))
             .map(|idx| {
                 if old {
-                    page.get_key_old(&view, idx)
+                    page.get_key_old(rt.io, idx)
                 } else {
                     page.get_key(rt.reborrow(), idx)
                 }

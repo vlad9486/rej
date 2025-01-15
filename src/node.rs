@@ -2,7 +2,7 @@ use std::{borrow::Cow, mem};
 
 use super::{
     page::PagePtr,
-    runtime::{PlainData, Alloc, Free, AbstractIo, AbstractViewer, Rt},
+    runtime::{PlainData, Alloc, Free, AbstractIo, Rt},
 };
 
 #[cfg(feature = "small")]
@@ -13,7 +13,7 @@ pub const M: usize = 0x100;
 
 pub const K: usize = M / 2;
 
-#[repr(C)]
+#[repr(C, align(0x1000))]
 #[derive(Clone, Copy)]
 pub struct NodePage {
     // if the node is root or branch, the pointer is `Self`,
@@ -37,7 +37,7 @@ unsafe impl PlainData for NodePage {
     const NAME: &str = "Node";
 }
 
-#[repr(C)]
+#[repr(C, align(0x1000))]
 #[derive(Clone, Copy)]
 struct KeyPage {
     keys: [[u8; 0x10]; M],
@@ -82,14 +82,14 @@ impl NodePage {
         self.stem == 0
     }
 
-    pub fn get_key_old<'c>(&self, view: &impl AbstractViewer, idx: usize) -> Key<'c> {
+    pub fn get_key_old<'c>(&self, file: &impl AbstractIo, idx: usize) -> Key<'c> {
         let len = self.keys_len[idx] as usize;
         let depth = len.div_ceil(0x10);
         // start with small allocation, optimistically assume the key is small
         let mut v = Vec::with_capacity(0x10 * 4);
         for i in &self.key[..depth] {
             let ptr = i.expect("BUG key length inconsistent with key pages");
-            let page = view.page(ptr);
+            let page = file.read(ptr);
             v.extend_from_slice(&page.keys[idx]);
         }
         v.truncate(len);
@@ -125,7 +125,7 @@ impl NodePage {
     }
 
     // TODO: SIMD optimization
-    pub fn search(&self, view: &impl AbstractViewer, key: &Key) -> Result<usize, usize> {
+    pub fn search(&self, file: &impl AbstractIo, key: &Key) -> Result<usize, usize> {
         use std::ops::Range;
 
         let len = self.len() - usize::from(!self.is_leaf());
@@ -159,7 +159,7 @@ impl NodePage {
         let mut pointers = self.keys_ptr();
 
         for (ptr, chunk) in (&mut pointers).zip(&mut chunks) {
-            let buffer = &view.page(ptr).keys;
+            let buffer = &file.read(ptr).keys;
 
             let mut key_b = [0; 0x10];
             let l = chunk.len().min(0x10);
@@ -233,9 +233,8 @@ impl NodePage {
     }
 
     pub fn realloc_keys(&mut self, mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>) {
-        let view = rt.io.read();
         for ptr in self.key.iter_mut().flatten() {
-            rt.read(&view, ptr);
+            rt.read(ptr);
         }
     }
 
@@ -393,9 +392,8 @@ impl NodePage {
         // TODO: optimize
         let mut last_key = None;
         if old {
-            let view = rt.io.read();
             for (to, from) in to.zip(from) {
-                let key = other.get_key_old(&view, from);
+                let key = other.get_key_old(rt.io, from);
                 if !key.bytes.is_empty() {
                     last_key = Some(key.clone());
                 }

@@ -8,8 +8,8 @@ use thiserror::Error;
 
 use super::{
     page::{PagePtr, RawPtr},
-    runtime::{Alloc, Free, PlainData, AbstractIo, AbstractViewer},
-    file::{FileIo, PageView},
+    runtime::{Alloc, Free, PlainData, AbstractIo},
+    file::FileIo,
 };
 
 #[derive(Debug, Error)]
@@ -53,7 +53,7 @@ impl Wal {
                 let page = RecordPage::new(inner);
                 let ptr = file.grow(pos, 1)?;
 
-                file.write(ptr, &page)?;
+                file.write(ptr, page)?;
             }
             let head = file.grow(Self::SIZE, 1)?.expect("must yield some");
 
@@ -73,11 +73,9 @@ impl Wal {
 
             Ok(s)
         } else {
-            let view = file.read();
-
             let it = (0..Self::SIZE)
                 .map(PagePtr::from_raw_number)
-                .map(|ptr| view.page::<RecordPage>(ptr))
+                .map(|ptr| file.read::<RecordPage>(ptr))
                 .filter_map(|p| p.check().copied());
 
             let mut inner = None::<RecordSeq>;
@@ -94,7 +92,7 @@ impl Wal {
             let mut lock = wal.lock();
             let stats = lock.stats(file);
             log::info!("did open database, will unroll log, stats: {stats:?}");
-            lock.unroll(file, view)?;
+            lock.unroll(file)?;
             lock.clear_orphan(file)?;
             lock.fill_cache(file)?;
             drop(lock);
@@ -145,18 +143,17 @@ impl WalLock<'_> {
     fn write(&mut self, file: &FileIo) -> Result<(), WalError> {
         self.next();
         let page = RecordPage::new(*self.0);
-        file.write(self.ptr(), &page)?;
+        file.write(self.ptr(), page)?;
         file.sync()?;
 
         Ok(())
     }
 
-    #[allow(clippy::drop_non_drop)]
-    fn unroll(&mut self, file: &FileIo, view: PageView<'_>) -> Result<(), WalError> {
+    fn unroll(&mut self, file: &FileIo) -> Result<(), WalError> {
         let mut reverse = self.0.seq;
 
         loop {
-            let page = view.page(Self::seq_to_ptr(reverse));
+            let page = file.read(Self::seq_to_ptr(reverse));
             if let Some(inner) = page.check() {
                 *self.0 = *inner;
                 break;
@@ -165,13 +162,11 @@ impl WalLock<'_> {
             }
         }
 
-        drop(view);
         file.set_pages(self.0.size)?;
 
         Ok(())
     }
 
-    #[allow(clippy::drop_non_drop)]
     fn fill_cache(&mut self, file: &FileIo) -> Result<(), WalError> {
         loop {
             if !self.0.cache.is_full() {
@@ -187,20 +182,18 @@ impl WalLock<'_> {
         let mut freelist = self.0.freelist;
         while let Some(ptr) = self.0.garbage.take() {
             let page = FreePage { next: freelist };
-            file.write(ptr, &page)?;
+            file.write(ptr, page)?;
             freelist = Some(ptr);
         }
 
-        let view = file.read();
         while !self.0.cache.is_full() {
             if let Some(ptr) = freelist {
                 self.0.cache.put(ptr);
-                freelist = view.page(ptr).next;
+                freelist = file.read(ptr).next;
             } else {
                 break;
             }
         }
-        drop(view);
         let freelist_change = self.0.freelist != freelist;
         self.0.freelist = freelist;
 
@@ -226,7 +219,7 @@ impl WalLock<'_> {
         let mut freelist = self.0.freelist;
         if let Some(ptr) = self.0.orphan.take().map(PagePtr::cast) {
             let page = FreePage { next: freelist };
-            file.write(ptr, &page)?;
+            file.write(ptr, page)?;
             freelist = Some(ptr);
         }
         self.0.freelist = freelist;
@@ -259,17 +252,15 @@ impl WalLock<'_> {
         let mut x = 0;
         let mut freelist = self.0.freelist;
 
-        let view = file.read();
-
         while freelist.is_some() {
             x += 1;
-            freelist = view.page(freelist).next;
+            freelist = file.read(freelist).next;
         }
         x
     }
 }
 
-#[repr(C)]
+#[repr(C, align(0x1000))]
 #[derive(Clone, Copy)]
 struct RecordPage {
     checksum: u64,
@@ -394,7 +385,8 @@ unsafe impl PlainData for RecordSeq {
     const NAME: &str = "RecordInner";
 }
 
-#[repr(C)]
+#[repr(C, align(0x1000))]
+#[derive(Clone, Copy)]
 struct FreePage {
     next: Option<PagePtr<FreePage>>,
 }

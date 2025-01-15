@@ -9,9 +9,9 @@ use fs4::fs_std::FileExt;
 use super::{
     utils,
     page::{PagePtr, RawPtr, PAGE_SIZE},
-    runtime::{PlainData, AbstractIo, AbstractViewer},
+    runtime::AbstractIo,
 };
-use super::cipher::{self, Cipher, CipherError, Params, CRYPTO_SIZE, EncryptedPage, DecryptedPage};
+use super::cipher::{self, Cipher, CipherError, Params, CRYPTO_SIZE};
 
 #[cfg(test)]
 #[derive(Clone, Copy)]
@@ -45,7 +45,7 @@ impl FileIo {
     pub fn new(path: impl AsRef<Path>, params: Params) -> Result<Self, CipherError> {
         use std::os::unix::fs::FileTypeExt;
 
-        let file = utils::open_file(path, params.create(), true)?;
+        let file = utils::open_file(path, true)?;
         let metadata = file.metadata()?;
         let regular_file = !metadata.file_type().is_block_device();
         if regular_file {
@@ -109,8 +109,14 @@ impl FileIo {
         }
 
         #[cfg(feature = "cipher")]
-        for i in 0..n {
-            self._write(old + i, &[0; PAGE_SIZE as usize])?;
+        {
+            use super::runtime::PBox;
+
+            let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
+
+            for i in 0..n {
+                self._write(old + i, &mut *page)?;
+            }
         }
 
         Ok(PagePtr::from_raw_number(old))
@@ -129,44 +135,30 @@ impl FileIo {
         self.write_counter.load(Ordering::SeqCst)
     }
 
-    fn _write(&self, n: u32, bytes: &[u8]) -> io::Result<()> {
+    fn _write(&self, n: u32, bytes: &mut [u8]) -> io::Result<()> {
         let offset = u64::from(n) * PAGE_SIZE;
         self.write_stats(offset);
-        let page = EncryptedPage::new(bytes, &self.cipher, n);
-        utils::write_at(&self.file, &page, offset + (CRYPTO_SIZE as u64))
+
+        self.cipher.encrypt(bytes, n);
+        utils::write_at(&self.file, &*bytes, offset + (CRYPTO_SIZE as u64))
     }
 }
 
 impl AbstractIo for FileIo {
-    type Viewer<'a> = PageView<'a>;
-
-    fn read(&self) -> Self::Viewer<'_> {
-        PageView(&self.file, &self.cipher)
-    }
-
-    fn write_bytes(&self, ptr: impl Into<Option<PagePtr<()>>>, bytes: &[u8]) -> io::Result<()> {
-        self._write(ptr.into().map_or(0, PagePtr::raw_number), bytes)
-    }
-}
-
-pub struct PageView<'a>(&'a fs::File, &'a Cipher);
-
-impl AbstractViewer for PageView<'_> {
-    type Page<'a, T>
-        = DecryptedPage<'a, T>
-    where
-        Self: 'a,
-        T: PlainData + 'a;
-
-    fn page<'a, T>(&'a self, ptr: impl Into<Option<PagePtr<T>>>) -> Self::Page<'a, T>
-    where
-        T: PlainData + 'a,
-    {
+    fn read_page(
+        &self,
+        ptr: impl Into<Option<PagePtr<()>>>,
+        page: &mut [u8; PAGE_SIZE as usize],
+    ) -> io::Result<()> {
         let n = ptr.into().map_or(0, PagePtr::raw_number);
         let offset = (u64::from(n) * PAGE_SIZE) + CRYPTO_SIZE as u64;
-        let mut page = Box::new([0; PAGE_SIZE as usize]);
-        // TODO: how to handle this? introduce a cache
-        utils::read_at(self.0, page.as_mut(), offset).expect("reading should not fail");
-        DecryptedPage::new(page, self.1, n)
+        utils::read_at(&self.file, page, offset)?;
+        self.cipher.decrypt(page, n);
+
+        Ok(())
+    }
+
+    fn write_bytes(&self, ptr: impl Into<Option<PagePtr<()>>>, bytes: &mut [u8]) -> io::Result<()> {
+        self._write(ptr.into().map_or(0, PagePtr::raw_number), bytes)
     }
 }

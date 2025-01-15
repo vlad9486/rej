@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::{
     page::{PagePtr, RawPtr},
-    runtime::{AbstractIo, AbstractViewer, Rt, Alloc, Free},
+    runtime::{AbstractIo, Rt, Alloc, Free, PBox},
     cipher::{CipherError, Params},
     file::FileIo,
     btree,
@@ -204,8 +204,11 @@ impl<'a> Occupied<'a> {
 
 impl Value<'_> {
     pub fn read(&self, offset: usize, buf: &mut [u8]) {
-        let view = self.file.read();
-        view.page(self.ptr).read_plain(offset, buf);
+        let mut page = PBox::new(4096, [0; 0x1000]);
+        self.file
+            .read_page(self.ptr.cast(), &mut page)
+            .expect("read should not fail");
+        buf.clone_from_slice(&page[offset..][..buf.len()]);
     }
 
     pub fn read_to_vec(&self, offset: usize, len: usize) -> Vec<u8> {
@@ -215,10 +218,10 @@ impl Value<'_> {
     }
 
     pub fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), DbError> {
-        let mut page = *self.file.read().page(self.ptr);
-        page.put_plain_at(offset, buf);
-        self.file.write(self.ptr, &page)?;
-        self.file.sync()?;
+        let mut page = PBox::new(4096, [0; 0x1000]);
+        self.file.read_page(self.ptr.cast(), &mut page)?;
+        page[offset..][..buf.len()].clone_from_slice(buf);
+        self.file.write_bytes(self.ptr.cast(), &mut *page)?;
 
         Ok(())
     }
@@ -287,7 +290,7 @@ impl Db {
         btree::print(rt, old_head, k, true);
     }
 
-    pub fn entry<'a, K>(&'a self, table_id: u32, bytes: K) -> Entry<'a, K>
+    pub fn entry<K>(&self, table_id: u32, bytes: K) -> Entry<'_, K>
     where
         K: AsRef<[u8]>,
     {
@@ -297,9 +300,8 @@ impl Db {
         };
         let lock = self.wal.lock();
         let file = &self.file;
-        let view = file.read();
 
-        let (inner, occupied) = btree::EntryInner::new(&view, lock.current_head(), &path);
+        let (inner, occupied) = btree::EntryInner::new(file, lock.current_head(), &path);
         if occupied {
             if inner.meta().is_some() {
                 Entry::Occupied(Occupied { inner, lock, file })
@@ -320,11 +322,10 @@ impl Db {
     pub fn next<'a>(&'a self, it: &mut DbIterator) -> Option<(u32, Vec<u8>, Option<Value<'a>>)> {
         let file = &self.file;
         let inner = it.inner.as_mut()?;
-        let view = file.read();
-        let key = inner.key(&view);
+        let key = inner.key(file);
         let value = inner.meta().map(|ptr| Value { ptr, file });
 
-        btree::EntryInner::next(&mut it.inner, &view);
+        btree::EntryInner::next(&mut it.inner, file);
 
         Some((key.table_id, key.bytes.into_owned(), value))
     }

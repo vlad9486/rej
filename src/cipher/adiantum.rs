@@ -1,4 +1,6 @@
-use std::{fs, io, marker::PhantomData, ops::Deref};
+use std::{fs, io};
+
+use aligned_vec::{avec, AVec, ConstAlign};
 
 use {
     adiantum::cipher::{zeroize::Zeroize, KeyInit},
@@ -8,7 +10,7 @@ use {
     thiserror::Error,
 };
 
-use super::{utils, page::PAGE_SIZE, runtime::PlainData};
+use super::utils;
 
 pub struct Cipher(adiantum::Cipher<XChaCha12, Aes256>);
 
@@ -108,7 +110,6 @@ impl Cipher {
     pub fn new(file: &fs::File, params: Params<'_>) -> Result<Self, CipherError> {
         match params {
             Params::Create { secret, seed } => {
-                file.set_len(CRYPTO_SIZE as u64)?;
                 let (cipher, blob) = Self::setup(secret, seed)?;
                 utils::write_at(file, &blob, 0)?;
                 Ok(cipher)
@@ -121,7 +122,10 @@ impl Cipher {
         }
     }
 
-    fn setup(secret: Secret<'_>, seed: &[u8]) -> Result<(Self, Vec<u8>), CipherError> {
+    fn setup(
+        secret: Secret<'_>,
+        seed: &[u8],
+    ) -> Result<(Self, AVec<u8, ConstAlign<4096>>), CipherError> {
         use sha3::{
             Sha3_256, Shake256,
             digest::{Update, ExtendableOutput, XofReader},
@@ -134,7 +138,7 @@ impl Cipher {
         }
 
         let mut rng = Shake256::default().chain(seed).finalize_xof();
-        let mut full_buf = vec![0; CRYPTO_SIZE];
+        let mut full_buf = avec![[4096]| 0; CRYPTO_SIZE];
         rng.read(&mut full_buf);
 
         let (salt, buf) = full_buf
@@ -186,6 +190,14 @@ impl Cipher {
 
         Ok(cipher)
     }
+
+    pub fn decrypt(&self, page: &mut [u8], n: u32) {
+        self.0.decrypt(page, &n.to_le_bytes());
+    }
+
+    pub fn encrypt(&self, page: &mut [u8], n: u32) {
+        self.0.encrypt(page, &n.to_le_bytes());
+    }
 }
 
 pub fn shred(seed: &[u8]) -> Result<Vec<u8>, CipherError> {
@@ -203,55 +215,4 @@ pub fn shred(seed: &[u8]) -> Result<Vec<u8>, CipherError> {
     rng.read(&mut full_buf);
 
     Ok(full_buf)
-}
-
-pub struct DecryptedPage<'a, T> {
-    page: Box<[u8; PAGE_SIZE as usize]>,
-    phantom_data: PhantomData<&'a T>,
-}
-
-pub struct EncryptedPage<'a> {
-    page: Box<[u8; PAGE_SIZE as usize]>,
-    phantom_data: PhantomData<&'a ()>,
-}
-
-impl<T> DecryptedPage<'_, T> {
-    pub fn new(mut page: Box<[u8; PAGE_SIZE as usize]>, cipher: &Cipher, n: u32) -> Self {
-        cipher.0.decrypt(page.as_mut_slice(), &n.to_le_bytes());
-        DecryptedPage {
-            page,
-            phantom_data: PhantomData,
-        }
-    }
-}
-
-impl EncryptedPage<'_> {
-    pub fn new(slice: &[u8], cipher: &Cipher, n: u32) -> Self {
-        let mut page = Box::new([0; PAGE_SIZE as usize]);
-        page[..slice.len()].clone_from_slice(slice);
-        cipher.0.encrypt(page.as_mut_slice(), &n.to_le_bytes());
-        EncryptedPage {
-            page,
-            phantom_data: PhantomData,
-        }
-    }
-}
-
-impl<T> Deref for DecryptedPage<'_, T>
-where
-    T: PlainData,
-{
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        T::as_this(self.page.as_slice())
-    }
-}
-
-impl Deref for EncryptedPage<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.page.as_slice()
-    }
 }

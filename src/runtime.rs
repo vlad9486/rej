@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap, io, mem, ops::Deref, slice};
+use std::{collections::BTreeMap, io, mem, slice};
+
+use aligned_vec::{ABox, ConstAlign};
 
 use super::page::{PagePtr, RawPtr, PAGE_SIZE};
 
@@ -18,18 +20,19 @@ where
         unsafe { &*slice.as_ptr().cast::<Self>() }
     }
 
+    fn as_this_mut(slice: &mut [u8]) -> &mut Self {
+        unsafe { &mut *slice.as_mut_ptr().cast::<Self>() }
+    }
+
     fn as_bytes(&self) -> &[u8] {
         let raw_ptr = (self as *const Self).cast();
         unsafe { slice::from_raw_parts(raw_ptr, mem::size_of::<Self>()) }
     }
 
-    fn as_this_mut(slice: &mut [u8]) -> &mut Self {
-        unsafe { &mut *slice.as_mut_ptr().cast::<Self>() }
+    fn as_bytes_mut(&mut self) -> &mut [u8] {
+        let raw_ptr = (self as *mut Self).cast();
+        unsafe { slice::from_raw_parts_mut(raw_ptr, mem::size_of::<Self>()) }
     }
-}
-
-unsafe impl PlainData for [u8; PAGE_SIZE as usize] {
-    const NAME: &str = "PlainData";
 }
 
 pub trait Alloc {
@@ -44,39 +47,40 @@ pub trait Free {
         T: PlainData;
 }
 
-pub trait AbstractViewer {
-    type Page<'a, T>: Deref<Target = T>
-    where
-        Self: 'a,
-        T: PlainData + 'a;
-
-    fn page<'a, T>(&'a self, ptr: impl Into<Option<PagePtr<T>>>) -> Self::Page<'a, T>
-    where
-        T: PlainData + 'a;
-}
-
 pub trait AbstractIo {
-    type Viewer<'a>: AbstractViewer
+    fn read_page(
+        &self,
+        ptr: impl Into<Option<PagePtr<()>>>,
+        page: &mut [u8; PAGE_SIZE as usize],
+    ) -> io::Result<()>;
+
+    fn read<T>(&self, ptr: impl Into<Option<PagePtr<T>>>) -> T
     where
-        Self: 'a;
+        T: PlainData + Copy,
+    {
+        let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
+        self.read_page(ptr.into().map(PagePtr::cast), &mut page)
+            .expect("read should not fail");
+        *T::as_this(&*page)
+    }
 
-    fn read(&self) -> Self::Viewer<'_>;
-
-    fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, page: &T) -> io::Result<()>
+    fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, mut page: T) -> io::Result<()>
     where
         T: PlainData,
     {
-        self.write_bytes(ptr.into().map(PagePtr::cast), page.as_bytes())
+        self.write_bytes(ptr.into().map(PagePtr::cast), page.as_bytes_mut())
     }
 
-    fn write_bytes(&self, ptr: impl Into<Option<PagePtr<()>>>, bytes: &[u8]) -> io::Result<()>;
+    fn write_bytes(&self, ptr: impl Into<Option<PagePtr<()>>>, bytes: &mut [u8]) -> io::Result<()>;
 }
+
+pub type PBox = ABox<[u8; PAGE_SIZE as usize], ConstAlign<{ PAGE_SIZE as usize }>>;
 
 pub struct Rt<'a, A, F, Io> {
     pub alloc: &'a mut A,
     pub free: &'a mut F,
     pub io: &'a Io,
-    storage: &'a mut BTreeMap<u32, Vec<u8>>,
+    storage: &'a mut BTreeMap<u32, PBox>,
 }
 
 impl<A, F, Io> Rt<'_, A, F, Io> {
@@ -99,7 +103,7 @@ where
         alloc: &'a mut A,
         free: &'a mut F,
         io: &'a Io,
-        storage: &'a mut BTreeMap<u32, Vec<u8>>,
+        storage: &'a mut BTreeMap<u32, PBox>,
     ) -> Self {
         Rt {
             alloc,
@@ -121,19 +125,23 @@ where
         T: PlainData,
     {
         let ptr = self.alloc.alloc();
-        self.storage
-            .insert(ptr.raw_number(), vec![0; mem::size_of::<T>()]);
+        let v = PBox::new(4096, [0; PAGE_SIZE as usize]);
+        self.storage.insert(ptr.raw_number(), v);
 
         ptr
     }
 
-    pub fn read<T>(&mut self, view: &Io::Viewer<'_>, ptr: &mut PagePtr<T>)
+    pub fn read<T>(&mut self, ptr: &mut PagePtr<T>)
     where
         T: PlainData,
     {
-        let v = view.page::<[u8; PAGE_SIZE as usize]>(ptr.cast())[..mem::size_of::<T>()].to_vec();
+        let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
+        // TODO: handle it
+        self.io
+            .read_page(ptr.cast(), &mut page)
+            .expect("read should not fail");
         self.free.free(mem::replace(ptr, self.alloc.alloc::<T>()));
-        self.storage.insert(ptr.raw_number(), v);
+        self.storage.insert(ptr.raw_number(), page);
     }
 
     pub fn set<T>(&mut self, ptr: &mut PagePtr<T>, v: T)
@@ -141,7 +149,9 @@ where
         T: PlainData,
     {
         self.free.free(mem::replace(ptr, self.alloc.alloc::<T>()));
-        self.storage.insert(ptr.raw_number(), v.as_bytes().to_vec());
+        let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
+        page[..v.as_bytes().len()].clone_from_slice(v.as_bytes());
+        self.storage.insert(ptr.raw_number(), page);
     }
 
     pub fn mutate<T>(&mut self, ptr: PagePtr<T>) -> &mut T
@@ -152,7 +162,7 @@ where
             .storage
             .get_mut(&ptr.raw_number())
             .expect("read or create before mutate");
-        T::as_this_mut(&mut *bytes)
+        T::as_this_mut(&mut **bytes)
     }
 
     pub fn look<T>(&self, ptr: PagePtr<T>) -> &T
@@ -163,13 +173,13 @@ where
             .storage
             .get(&ptr.raw_number())
             .expect("read or create before mutate");
-        T::as_this(bytes)
+        T::as_this(&**bytes)
     }
 
     pub fn flush(self) -> io::Result<()> {
-        for (n, page) in self.storage {
+        for (n, mut page) in mem::take(self.storage) {
             self.io
-                .write_bytes(PagePtr::from_raw_number(*n), page.as_ref())?;
+                .write_bytes(PagePtr::from_raw_number(n), &mut *page)?;
         }
 
         Ok(())

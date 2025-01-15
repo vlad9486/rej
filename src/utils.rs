@@ -91,7 +91,7 @@ pub fn read_at(file: &fs::File, buf: &mut [u8], offset: u64) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-pub fn open_file(path: impl AsRef<Path>, create: bool, direct_write: bool) -> io::Result<fs::File> {
+pub fn open_file(path: impl AsRef<Path>, direct_write: bool) -> io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -102,7 +102,7 @@ pub fn open_file(path: impl AsRef<Path>, create: bool, direct_write: bool) -> io
 
     let mut open_options = fs::OpenOptions::new();
     open_options.write(true).read(true);
-    if create {
+    if !path.as_ref().exists() {
         open_options.create_new(true);
     }
     if direct_write {
