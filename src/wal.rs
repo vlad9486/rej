@@ -75,8 +75,8 @@ impl Wal {
             Ok(s)
         } else {
             let it = (0..Self::SIZE)
-                .map(PagePtr::from_raw_number)
-                .map(|ptr| file.read::<RecordPage>(ptr))
+                .map(PagePtr::<RecordPage>::from_raw_number)
+                .map(|ptr| file.read(ptr))
                 .filter_map(|p| p.check().copied());
 
             let mut inner = None::<RecordSeq>;

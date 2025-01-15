@@ -49,9 +49,10 @@ pub trait AbstractIo {
     where
         T: PlainData + Copy,
     {
+        // TODO: unwrap
         let page = self
             .read_page(ptr.into().map_or(0, PagePtr::raw_number))
-            .expect("read should not fail");
+            .unwrap();
         *T::as_this(&*page)
     }
 
@@ -63,10 +64,10 @@ pub trait AbstractIo {
         let bytes = value.as_bytes();
         page[..bytes.len()].clone_from_slice(bytes);
 
-        self.write_bytes(ptr.into().map_or(0, PagePtr::raw_number), page)
+        self.write_page(ptr.into().map_or(0, PagePtr::raw_number), page)
     }
 
-    fn write_bytes(&self, ptr: u32, page: PBox) -> io::Result<()>;
+    fn write_page(&self, ptr: u32, page: PBox) -> io::Result<()>;
 
     fn write_batch(&self, it: impl Iterator<Item = (u32, PBox)>) -> io::Result<()>;
 }
@@ -132,11 +133,8 @@ where
     where
         T: PlainData,
     {
-        // TODO: handle it
-        let page = self
-            .io
-            .read_page(ptr.raw_number())
-            .expect("read should not fail");
+        // TODO: unwrap
+        let page = self.io.read_page(ptr.raw_number()).unwrap();
         self.free.free(mem::replace(ptr, self.alloc.alloc::<T>()));
         self.storage.insert(ptr.raw_number(), page);
     }

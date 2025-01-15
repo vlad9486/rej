@@ -56,7 +56,7 @@ fn insert(c: &mut Criterion) {
                 .write_at(0, &[0, 1])
                 .unwrap();
             let value = db.entry(0, &key).occupied().unwrap().remove().unwrap();
-            black_box(value.read_to_vec(0, 2));
+            black_box(value.read_to_vec(0, 2).unwrap());
             black_box(db.stats());
         })
     });

@@ -54,8 +54,7 @@ pub fn write_v_at(
     }
     ring.submit_and_wait(l)?;
 
-    for _ in 0..l {
-        let cqe = ring.completion().next().unwrap();
+    while let Some(cqe) = ring.completion().next() {
         if cqe.result() < 0 {
             log::error!("Error: {}", io::Error::from_raw_os_error(-cqe.result()));
         }

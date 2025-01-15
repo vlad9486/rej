@@ -151,7 +151,7 @@ impl AbstractIo for FileIo {
             .read(&self.file, &self.cipher, n)
     }
 
-    fn write_bytes(&self, n: u32, page: PBox) -> io::Result<()> {
+    fn write_page(&self, n: u32, page: PBox) -> io::Result<()> {
         self.write_stats(u64::from(n) * PAGE_SIZE);
 
         self.cache

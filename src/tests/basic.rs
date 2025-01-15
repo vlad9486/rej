@@ -41,7 +41,7 @@ fn scan() {
                 }
                 log::debug!("{}", hex::encode(&key));
                 let expected = expected.next().unwrap();
-                let value = value.unwrap().read_to_vec(0, 16);
+                let value = value.unwrap().read_to_vec(0, 16).unwrap();
                 assert_eq!(key, value);
                 assert_eq!(key[0..2], (expected * 4).to_be_bytes());
             }
@@ -149,7 +149,7 @@ fn remove_all() {
         keys.shuffle(rng);
         for key in &keys {
             log::debug!("{}", printer(key));
-            let value = db
+            let vec = db
                 .entry(5, key)
                 .occupied()
                 .unwrap_or_else(|| {
@@ -157,8 +157,10 @@ fn remove_all() {
                     panic!();
                 })
                 .remove()
+                .unwrap()
+                .read_to_vec(0, 1)
                 .unwrap();
-            assert_eq!(value.read_to_vec(0, 1), key.clone());
+            assert_eq!(vec, key.clone());
             db.print(printer);
         }
     })

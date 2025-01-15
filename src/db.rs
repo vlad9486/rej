@@ -203,24 +203,24 @@ impl<'a> Occupied<'a> {
 }
 
 impl Value<'_> {
-    pub fn read(&self, offset: usize, buf: &mut [u8]) {
-        let page = self
-            .file
-            .read_page(self.ptr.raw_number())
-            .expect("read should not fail");
+    pub fn read(&self, offset: usize, buf: &mut [u8]) -> Result<(), DbError> {
+        let page = self.file.read_page(self.ptr.raw_number())?;
         buf.clone_from_slice(&page[offset..][..buf.len()]);
+
+        Ok(())
     }
 
-    pub fn read_to_vec(&self, offset: usize, len: usize) -> Vec<u8> {
+    pub fn read_to_vec(&self, offset: usize, len: usize) -> Result<Vec<u8>, DbError> {
         let mut buf = vec![0; len];
-        self.read(offset, &mut buf);
-        buf
+        self.read(offset, &mut buf)?;
+
+        Ok(buf)
     }
 
     pub fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), DbError> {
         let mut page = self.file.read_page(self.ptr.raw_number())?;
         page[offset..][..buf.len()].clone_from_slice(buf);
-        self.file.write_bytes(self.ptr.raw_number(), page)?;
+        self.file.write_page(self.ptr.raw_number(), page)?;
 
         Ok(())
     }
