@@ -109,7 +109,7 @@ impl FileIo {
         self.cache
             .lock()
             .expect("poisoned")
-            .flush(&self.file, &self.cipher)
+            .sync(&self.file, &self.cipher)
     }
 
     pub fn grow<T>(&self, old: u32, n: u32) -> io::Result<Option<PagePtr<T>>> {
@@ -178,6 +178,7 @@ fn n_to_o(n: u32) -> u64 {
 
 pub struct Cache {
     ring: IoUring,
+    log: Option<(u32, PBox)>,
     inner: BTreeMap<u32, PBox>,
 }
 
@@ -186,27 +187,38 @@ impl Cache {
         let ring = IoUring::new(1024)?;
         Ok(Cache {
             ring,
+            log: None,
             inner: BTreeMap::default(),
         })
     }
 }
 
 impl Cache {
-    fn flush(&mut self, file: &fs::File, cipher: &Cipher) -> io::Result<()> {
+    fn sync(&mut self, file: &fs::File, cipher: &Cipher) -> io::Result<()> {
         let mut map = mem::take(&mut self.inner);
-        let it = map.iter_mut().map(|(n, page)| {
-            cipher.encrypt(&mut **page, *n);
-            (n_to_o(*n), page.as_ptr())
-        });
+        let mut log = self.log.take();
+        let it = log
+            .as_mut()
+            .map(|(n, p)| (&*n, p))
+            .into_iter()
+            .chain(map.iter_mut())
+            .map(|(n, page)| {
+                cipher.encrypt(&mut **page, *n);
+                (n_to_o(*n), (**page).as_ptr())
+            });
         utils::write_v_at(file, &mut self.ring, it)?;
 
         Ok(())
     }
 
     fn write(&mut self, file: &fs::File, cipher: &Cipher, n: u32, page: PBox) -> io::Result<()> {
-        self.inner.insert(n, page);
-        if self.inner.len() > 256 {
-            self.flush(file, cipher)?;
+        if n < 256 {
+            self.log = Some((n, page));
+        } else {
+            self.inner.insert(n, page);
+            if self.inner.len() > 128 {
+                self.sync(file, cipher)?;
+            }
         }
 
         Ok(())
@@ -218,9 +230,8 @@ impl Cache {
         cipher: &Cipher,
         it: impl IntoIterator<Item = (u32, PBox)>,
     ) -> io::Result<()> {
-        self.inner.extend(it);
-        if self.inner.len() > 256 {
-            self.flush(file, cipher)?;
+        for (n, page) in it {
+            self.write(file, cipher, n, page)?;
         }
 
         Ok(())

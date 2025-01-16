@@ -79,14 +79,7 @@ impl Wal {
                 .map(|ptr| file.read(ptr))
                 .filter_map(|p| p.check().copied());
 
-            let mut inner = None::<RecordSeq>;
-            for item in it {
-                if inner.map_or(0, |i| i.seq) > item.seq {
-                    break;
-                } else {
-                    inner = Some(item);
-                }
-            }
+            let inner = it.max_by(|a, b| a.seq.cmp(&b.seq));
 
             let wal = inner.map(Mutex::new).map(Self).ok_or(WalError::BadWal)?;
 

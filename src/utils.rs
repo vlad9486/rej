@@ -52,7 +52,12 @@ pub fn write_v_at(
                 .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         }
     }
+    if l == 0 {
+        return Ok(());
+    }
+
     ring.submit_and_wait(l)?;
+    ring.submission().sync();
 
     while let Some(cqe) = ring.completion().next() {
         if cqe.result() < 0 {

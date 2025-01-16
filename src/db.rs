@@ -255,7 +255,7 @@ impl Db {
         self.file.m_lock();
     }
 
-    pub fn flush(&self) -> Result<(), DbError> {
+    pub fn sync(&self) -> Result<(), DbError> {
         self.file.sync()?;
 
         Ok(())
