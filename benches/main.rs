@@ -36,7 +36,7 @@ fn insert(c: &mut Criterion) {
     let mut key = *b"preparation     preparation";
     for i in 0..=255u8 {
         key[24] = i;
-        db.entry(0, &key)
+        db.entry(&key)
             .vacant()
             .unwrap()
             .insert()
@@ -48,14 +48,14 @@ fn insert(c: &mut Criterion) {
     c.bench_function("insert", |b| {
         b.iter(|| {
             let key = *b"key key key asd asd asd     ";
-            db.entry(0, &key)
+            db.entry(&key)
                 .vacant()
                 .unwrap()
                 .insert()
                 .unwrap()
                 .write_at(0, &[0, 1])
                 .unwrap();
-            let value = db.entry(0, &key).occupied().unwrap().remove().unwrap();
+            let value = db.entry(&key).occupied().unwrap().remove().unwrap();
             db.sync().unwrap();
             black_box(value.read_to_vec(0, 2).unwrap());
             black_box(db.stats());

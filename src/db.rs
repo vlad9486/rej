@@ -1,4 +1,4 @@
-use std::{borrow::Cow, io, mem, path::Path};
+use std::{io, mem, path::Path};
 
 use thiserror::Error;
 
@@ -8,7 +8,6 @@ use super::{
     cipher::{CipherError, Params},
     file::FileIo,
     btree,
-    node::Key,
     wal::{Wal, WalLock, WalError, DbStats},
     value::MetadataPage,
 };
@@ -78,7 +77,6 @@ pub struct Vacant<'a, K> {
     inner: btree::EntryInner,
     lock: WalLock<'a>,
     file: &'a FileIo,
-    table_id: u32,
     bytes: K,
 }
 
@@ -109,15 +107,9 @@ where
             inner,
             mut lock,
             file,
-            table_id,
             bytes,
         } = self;
         let wal_lock = &mut lock;
-
-        let path = Key {
-            table_id,
-            bytes: Cow::Borrowed(bytes.as_ref()),
-        };
 
         let (alloc, free) = wal_lock.cache_mut();
         let mut storage = Default::default();
@@ -129,7 +121,7 @@ where
             ptr
         });
 
-        let new_head = inner.insert(rt.reborrow(), ptr, &path)?;
+        let new_head = inner.insert(rt.reborrow(), ptr, bytes.as_ref());
         rt.flush()?;
         wal_lock.new_head(self.file, new_head)?;
 
@@ -156,7 +148,7 @@ impl<'a> EmptyCell<'a> {
         let (alloc, free) = wal_lock.cache_mut();
         let mut storage = Default::default();
         let mut rt = Rt::new(alloc, free, file, &mut storage);
-        let new_head = inner.remove(rt.reborrow())?;
+        let new_head = inner.remove(rt.reborrow());
         rt.flush()?;
 
         wal_lock.new_head(file, new_head)?;
@@ -190,7 +182,7 @@ impl<'a> Occupied<'a> {
         let (alloc, free) = wal_lock.cache_mut();
         let mut storage = Default::default();
         let mut rt = Rt::new(alloc, free, file, &mut storage);
-        let new_head = inner.remove(rt.reborrow())?;
+        let new_head = inner.remove(rt.reborrow());
         rt.flush()?;
 
         if let Some(old) = old {
@@ -295,18 +287,14 @@ impl Db {
         btree::print(rt, old_head, k, true);
     }
 
-    pub fn entry<K>(&self, table_id: u32, bytes: K) -> Entry<'_, K>
+    pub fn entry<K>(&self, bytes: K) -> Entry<'_, K>
     where
         K: AsRef<[u8]>,
     {
-        let path = Key {
-            table_id,
-            bytes: Cow::Borrowed(bytes.as_ref()),
-        };
         let lock = self.wal.lock();
         let file = &self.file;
 
-        let (inner, occupied) = btree::EntryInner::new(file, lock.current_head(), &path);
+        let (inner, occupied) = btree::EntryInner::new(file, lock.current_head(), bytes.as_ref());
         if occupied {
             if inner.meta().is_some() {
                 Entry::Occupied(Occupied { inner, lock, file })
@@ -318,13 +306,12 @@ impl Db {
                 inner,
                 lock,
                 file,
-                table_id,
                 bytes,
             })
         }
     }
 
-    pub fn next<'a>(&'a self, it: &mut DbIterator) -> Option<(u32, Vec<u8>, Option<Value<'a>>)> {
+    pub fn next<'a>(&'a self, it: &mut DbIterator) -> Option<(Vec<u8>, Option<Value<'a>>)> {
         let file = &self.file;
         let inner = it.inner.as_mut()?;
         let key = inner.key(file);
@@ -332,7 +319,7 @@ impl Db {
 
         btree::EntryInner::next(&mut it.inner, file);
 
-        Some((key.table_id, key.bytes.into_owned(), value))
+        Some((key, value))
     }
 
     pub fn stats(&self) -> DbStats {

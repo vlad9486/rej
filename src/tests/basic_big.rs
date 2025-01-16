@@ -11,7 +11,7 @@ fn big() {
         indexes.shuffle(rng);
         for i in &indexes {
             let key = format!("key                  {i:03}");
-            db.entry(0, key.as_bytes())
+            db.entry(key.as_bytes())
                 .vacant()
                 .unwrap()
                 .insert()
@@ -23,7 +23,7 @@ fn big() {
         for i in 0..NUM {
             let key = format!("key                  {i:03}");
             let vec = db
-                .entry(0, key.as_bytes())
+                .entry(key.as_bytes())
                 .occupied()
                 .unwrap()
                 .into_value()
@@ -36,7 +36,7 @@ fn big() {
         for i in indexes {
             let key = format!("key                  {i:03}");
             let vec = db
-                .entry(0, key.as_bytes())
+                .entry(key.as_bytes())
                 .occupied()
                 .unwrap_or_else(|| panic!("{key}"))
                 .remove()
@@ -45,7 +45,7 @@ fn big() {
                 .unwrap();
             println!("deleted {key}");
             assert_eq!(vec, &i.to_le_bytes());
-            assert!(db.entry(0, key.as_bytes()).vacant().is_some());
+            assert!(db.entry(key.as_bytes()).vacant().is_some());
         }
     })
 }

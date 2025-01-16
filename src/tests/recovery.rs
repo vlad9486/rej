@@ -12,17 +12,17 @@ fn populate(db: Db) -> Result<DbStats, DbError> {
             .chain(s..128u8)
             .collect::<Vec<u8>>()
     };
-    db.entry(0, b"some key 1, long")
+    db.entry(b"some key 1, long")
         .vacant()
         .unwrap()
         .insert()?
         .write_at(0, &data(10))?;
-    db.entry(0, b"some key 6, too                long")
+    db.entry(b"some key 6, too                long")
         .vacant()
         .unwrap()
         .insert()?
         .write_at(0, &data(20))?;
-    db.entry(0, b"some key 3")
+    db.entry(b"some key 3")
         .vacant()
         .unwrap()
         .insert()?
@@ -35,7 +35,7 @@ fn populate(db: Db) -> Result<DbStats, DbError> {
 fn check(db: Db) -> bool {
     let stats = db.stats();
     db.print(|k| std::str::from_utf8(k).unwrap().to_owned());
-    let mut it = db.entry(0, b"").into_db_iter();
+    let mut it = db.entry(b"").into_db_iter();
     let mut cnt = 0;
     while db.next(&mut it).is_some() {
         cnt += 1;

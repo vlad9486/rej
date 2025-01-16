@@ -1,4 +1,4 @@
-use std::{borrow::Cow, mem};
+use std::mem;
 
 use super::{
     page::PagePtr,
@@ -21,8 +21,6 @@ pub struct NodePage {
     pub child: [Option<PagePtr<Self>>; M],
     // length in bytes of each key
     keys_len: [u16; M],
-    // table id is a prefix of the key
-    table_id: [u32; M],
     // pointers to additional pages that stores keys
     // maximal key size is `0x40 * 0x10 = 1 kiB`
     key: [Option<PagePtr<KeyPage>>; 0x40],
@@ -47,18 +45,11 @@ unsafe impl PlainData for KeyPage {
     const NAME: &str = "Key";
 }
 
-#[derive(Clone)]
-pub struct Key<'a> {
-    pub table_id: u32,
-    pub bytes: Cow<'a, [u8]>,
-}
-
 impl NodePage {
     pub const fn empty() -> Self {
         NodePage {
             child: [None; M],
             keys_len: [0; M],
-            table_id: [0; M],
             key: [None; 64],
             stem: 1,
             len: 0,
@@ -82,7 +73,7 @@ impl NodePage {
         self.stem == 0
     }
 
-    pub fn get_key_old<'c>(&self, file: &impl AbstractIo, idx: usize) -> Key<'c> {
+    pub fn get_key_old(&self, file: &impl AbstractIo, idx: usize) -> Vec<u8> {
         let len = self.keys_len[idx] as usize;
         let depth = len.div_ceil(0x10);
         // start with small allocation, optimistically assume the key is small
@@ -93,17 +84,14 @@ impl NodePage {
             v.extend_from_slice(&page.keys[idx]);
         }
         v.truncate(len);
-        Key {
-            table_id: self.table_id[idx],
-            bytes: Cow::Owned(v),
-        }
+        v
     }
 
-    pub fn get_key<'c>(
+    pub fn get_key(
         &self,
         rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
-    ) -> Key<'c> {
+    ) -> Vec<u8> {
         // start with small allocation, optimistically assume the key is small
         let mut v = Vec::with_capacity(0x10 * 4);
         for ptr in self.keys_ptr() {
@@ -111,10 +99,7 @@ impl NodePage {
             v.extend_from_slice(&page.keys[idx]);
         }
         v.truncate(self.keys_len[idx] as usize);
-        Key {
-            table_id: self.table_id[idx],
-            bytes: Cow::Owned(v),
-        }
+        v
     }
 
     fn keys_ptr(&self) -> impl Iterator<Item = PagePtr<KeyPage>> {
@@ -125,7 +110,7 @@ impl NodePage {
     }
 
     // TODO: SIMD optimization
-    pub fn search(&self, file: &impl AbstractIo, key: &Key) -> Result<usize, usize> {
+    pub fn search(&self, file: &impl AbstractIo, key: &[u8]) -> Result<usize, usize> {
         use std::ops::Range;
 
         let len = self.len() - usize::from(!self.is_leaf());
@@ -151,11 +136,9 @@ impl NodePage {
             range.end = range.end.min(orig.end);
         }
 
-        let i = self.table_id[..len].binary_search(&key.table_id)?;
         let mut range = 0..len;
-        extend_range(len, i, &mut range, |i| self.table_id[i] == key.table_id);
 
-        let mut chunks = key.bytes.chunks(0x10);
+        let mut chunks = key.chunks(0x10);
         let mut pointers = self.keys_ptr();
 
         for (ptr, chunk) in (&mut pointers).zip(&mut chunks) {
@@ -172,7 +155,7 @@ impl NodePage {
             extend_range(len, i, &mut range, |i| buffer[i] == key_b);
         }
 
-        let original_len = key.bytes.len() as u16;
+        let original_len = key.len() as u16;
         let i = self.keys_len[range.clone()]
             .binary_search(&original_len)
             .map_err(|i| range.start + i)?;
@@ -190,7 +173,7 @@ impl NodePage {
         } else if range.len() == 1 {
             Ok(range.start)
         } else {
-            panic!("BUG: two identical keys detected {:?}", key.bytes);
+            panic!("BUG: two identical keys detected {}", hex::encode(key));
         }
     }
 
@@ -205,8 +188,6 @@ impl NodePage {
         self.child[K..].iter_mut().for_each(|x| *x = None);
         new.keys_len[..K].clone_from_slice(&self.keys_len[K..]);
         self.keys_len[K..].iter_mut().for_each(|x| *x = 0);
-        new.table_id[..K].clone_from_slice(&self.table_id[K..]);
-        self.table_id[K..].iter_mut().for_each(|x| *x = 0);
 
         let mut new_keys = [None; 0x40];
         for (ptr, new) in self.key.iter().zip(new_keys.iter_mut()) {
@@ -238,30 +219,28 @@ impl NodePage {
         }
     }
 
-    pub fn insert<'c>(
+    pub fn insert(
         &mut self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         new_child_ptr: Option<PagePtr<NodePage>>,
         idx: usize,
-        key: &Key,
+        key: &[u8],
         rev: bool,
-    ) -> Option<(Key<'c>, PagePtr<NodePage>)> {
+    ) -> Option<(Vec<u8>, PagePtr<NodePage>)> {
         let old_len = self.len();
         self.len = (old_len + 1) as u16;
 
         for i in (idx..old_len).rev() {
             self.child[i + 1] = self.child[i];
             self.keys_len[i + 1] = self.keys_len[i];
-            self.table_id[i + 1] = self.table_id[i];
         }
 
         self.child[idx] = new_child_ptr;
         if rev {
             self.child.swap(idx, idx + 1);
         }
-        self.keys_len[idx] = key.bytes.len() as u16;
-        self.table_id[idx] = key.table_id;
-        self.insert_key(rt.reborrow(), idx, old_len, &key.bytes);
+        self.keys_len[idx] = key.len() as u16;
+        self.insert_key(rt.reborrow(), idx, old_len, key);
 
         if self.len() == M {
             let new_ptr = self.split(rt.reborrow());
@@ -301,18 +280,17 @@ impl NodePage {
         }
     }
 
-    pub fn remove<'c>(
+    pub fn remove(
         &mut self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
         rev: bool,
-    ) -> (Option<PagePtr<NodePage>>, Key<'c>) {
+    ) -> (Option<PagePtr<NodePage>>, Vec<u8>) {
         let new_len = self.len() - 1;
         self.len = new_len as u16;
 
         let old_ptr = self.child[idx];
         let old_key_len = self.keys_len[idx];
-        let old_table_id = self.table_id[idx];
 
         if rev {
             self.child.swap(idx, idx + 1);
@@ -321,7 +299,6 @@ impl NodePage {
         for i in idx..new_len {
             self.child[i] = self.child[i + 1];
             self.keys_len[i] = self.keys_len[i + 1];
-            self.table_id[i] = self.table_id[i + 1];
         }
         // just in case
         self.child[new_len] = None;
@@ -337,23 +314,18 @@ impl NodePage {
         }
         v.truncate(old_key_len as usize);
 
-        let key = Key {
-            table_id: old_table_id,
-            bytes: v.into(),
-        };
-        (old_ptr, key)
+        (old_ptr, v)
     }
 
-    pub fn set_key<'d>(
+    pub fn set_key(
         &mut self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         idx: usize,
-        key: Key<'_>,
-    ) -> Key<'d> {
-        let old_key_len = mem::replace(&mut self.keys_len[idx], key.bytes.len() as u16);
-        let old_table_id = mem::replace(&mut self.table_id[idx], key.table_id);
+        key: &[u8],
+    ) -> Vec<u8> {
+        let old_key_len = mem::replace(&mut self.keys_len[idx], key.len() as u16);
 
-        let chunks = key.bytes.chunks(0x10);
+        let chunks = key.chunks(0x10);
 
         let mut v = Vec::with_capacity(0x10 * 4);
         for (ptr, chunk) in self.key.iter_mut().zip(chunks) {
@@ -366,20 +338,16 @@ impl NodePage {
             page.keys[idx][..l].clone_from_slice(&chunk[..l]);
         }
         v.truncate(old_key_len as usize);
-
-        Key {
-            table_id: old_table_id,
-            bytes: v.into(),
-        }
+        v
     }
 
     pub fn merge(
         &mut self,
         other: &Self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-        key: Key<'_>,
+        key: &[u8],
         old: bool,
-    ) -> Key<'_> {
+    ) -> Vec<u8> {
         let new_len = self.len + other.len;
         if !self.is_leaf() {
             self.set_key(rt.reborrow(), self.len() - 1, key);
@@ -394,18 +362,18 @@ impl NodePage {
         if old {
             for (to, from) in to.zip(from) {
                 let key = other.get_key_old(rt.io, from);
-                if !key.bytes.is_empty() {
+                if !key.is_empty() {
                     last_key = Some(key.clone());
                 }
-                self.set_key(rt.reborrow(), to, key);
+                self.set_key(rt.reborrow(), to, &key);
             }
         } else {
             for (to, from) in to.zip(from) {
                 let key = other.get_key(rt.reborrow(), from);
-                if !key.bytes.is_empty() {
+                if !key.is_empty() {
                     last_key = Some(key.clone());
                 }
-                self.set_key(rt.reborrow(), to, key);
+                self.set_key(rt.reborrow(), to, &key);
             }
         }
         self.len = new_len;

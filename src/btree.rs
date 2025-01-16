@@ -1,10 +1,8 @@
-use std::io;
-
 use super::{
     page::{PagePtr, RawPtr},
     runtime::{Alloc, Free, AbstractIo, Rt},
     value::MetadataPage,
-    node::{NodePage, Key, K},
+    node::{NodePage, K},
 };
 
 pub struct EntryInner {
@@ -19,7 +17,7 @@ struct Level {
 }
 
 impl EntryInner {
-    pub fn new(view: &impl AbstractIo, root: PagePtr<NodePage>, key: &Key<'_>) -> (Self, bool) {
+    pub fn new(view: &impl AbstractIo, root: PagePtr<NodePage>, key: &[u8]) -> (Self, bool) {
         let mut stack = Vec::with_capacity(6);
         let mut ptr = root;
 
@@ -87,7 +85,7 @@ impl EntryInner {
         self.leaf.node.child[self.leaf.idx] = Some(meta.cast());
     }
 
-    pub fn key<'c>(&self, view: &impl AbstractIo) -> Key<'c> {
+    pub fn key(&self, view: &impl AbstractIo) -> Vec<u8> {
         self.leaf.node.get_key_old(view, self.leaf.idx)
     }
 
@@ -95,8 +93,8 @@ impl EntryInner {
         self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
         meta: Option<PagePtr<MetadataPage>>,
-        key: &Key<'_>,
-    ) -> io::Result<PagePtr<NodePage>> {
+        key: &[u8],
+    ) -> PagePtr<NodePage> {
         let EntryInner {
             mut leaf,
             mut stack,
@@ -132,13 +130,13 @@ impl EntryInner {
             ptr = parent_ptr;
         }
 
-        Ok(ptr)
+        ptr
     }
 
     pub fn remove(
         self,
         mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-    ) -> io::Result<PagePtr<NodePage>> {
+    ) -> PagePtr<NodePage> {
         let EntryInner {
             mut leaf,
             mut stack,
@@ -192,7 +190,9 @@ impl EntryInner {
 
                             let parent_key =
                                 donor.node.get_key(rt.reborrow(), donor.node.len() - 1);
-                            level.node.set_key(rt.reborrow(), level.idx - 1, parent_key);
+                            level
+                                .node
+                                .set_key(rt.reborrow(), level.idx - 1, &parent_key);
 
                             underflow = false;
                             break;
@@ -213,7 +213,7 @@ impl EntryInner {
 
                             level.node.child[level.idx + 1] = Some(donor.ptr);
 
-                            level.node.set_key(rt.reborrow(), level.idx, donated_key);
+                            level.node.set_key(rt.reborrow(), level.idx, &donated_key);
 
                             underflow = false;
                             break;
@@ -227,7 +227,7 @@ impl EntryInner {
                             neighbor.node.realloc_keys(rt.reborrow());
                             level.idx -= 1;
                             let (_, key) = level.node.remove(rt.reborrow(), level.idx, false);
-                            neighbor.node.merge(&prev, rt.reborrow(), key, false);
+                            neighbor.node.merge(&prev, rt.reborrow(), &key, false);
                             prev.free(rt.reborrow());
 
                             rt.free.free(ptr);
@@ -246,8 +246,8 @@ impl EntryInner {
                         let neighbor_ptr = neighbor_ptr.expect("must be there");
                         let key = level.node.get_key(rt.reborrow(), level.idx);
                         assert_eq!(neighbor_ptr, neighbor.ptr, "suppose to remove the neighbor");
-                        let last_key = prev.merge(&neighbor.node, rt.reborrow(), key, true);
-                        level.node.set_key(rt.reborrow(), level.idx, last_key);
+                        let last_key = prev.merge(&neighbor.node, rt.reborrow(), &key, true);
+                        level.node.set_key(rt.reborrow(), level.idx, &last_key);
                         neighbor.node.free(rt.reborrow());
                         rt.free.free(neighbor.ptr);
                         *rt.mutate(ptr) = prev;
@@ -270,7 +270,7 @@ impl EntryInner {
             }
         }
 
-        Ok(ptr)
+        ptr
     }
 }
 
@@ -334,7 +334,7 @@ pub fn print<K, D>(
                     page.get_key(rt.reborrow(), idx)
                 }
             })
-            .map(|key| format!("{}:{}", key.table_id, k(&key.bytes)))
+            .map(|key| format!("{}", k(&key)))
             .collect::<Vec<_>>()
             .join("|");
         nodes.insert(ptr.raw_number(), format!("\"{node_text}\""));
