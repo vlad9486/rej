@@ -67,7 +67,7 @@ pub trait AbstractIo {
         self.write_page(ptr.into().map_or(0, PagePtr::raw_number), page)
     }
 
-    fn write_page(&self, ptr: u32, page: PBox) -> io::Result<()>;
+    fn write_page(&self, n: u32, page: PBox) -> io::Result<()>;
 
     fn write_batch(&self, it: impl Iterator<Item = (u32, PBox)>) -> io::Result<()>;
 }
