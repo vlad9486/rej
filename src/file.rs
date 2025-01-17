@@ -163,11 +163,16 @@ fn n_to_o(n: u32) -> u64 {
     (u64::from(n) * PAGE_SIZE) + CRYPTO_SIZE as u64
 }
 
-pub struct Cache {
+struct Cache {
     cipher: Cipher,
     ring: IoUring,
-    log: Option<(u32, PBox)>,
-    inner: BTreeMap<u32, PBox>,
+    log: Option<(u32, CacheItem)>,
+    inner: BTreeMap<u32, CacheItem>,
+}
+
+struct CacheItem {
+    page: PBox,
+    dirty: bool,
 }
 
 impl Cache {
@@ -183,44 +188,84 @@ impl Cache {
 
 impl Cache {
     fn sync(&mut self, file: &fs::File) -> io::Result<()> {
+        use io_uring::{opcode, types};
+        use std::os::unix::io::AsRawFd;
+
         let mut map = mem::take(&mut self.inner);
         let mut log = self.log.take();
-        let it = log
-            .as_mut()
-            .map(|(n, p)| (&*n, p))
-            .into_iter()
-            .chain(map.iter_mut())
-            .map(|(n, page)| {
-                self.cipher.encrypt(&mut **page, *n);
-                (n_to_o(*n), (**page).as_ptr())
+        let it = map
+            .iter_mut()
+            .chain(log.as_mut().map(|(n, p)| (&*n, p)))
+            .filter(|(_, item)| item.dirty)
+            .map(|(n, item)| {
+                let data = &mut *item.page;
+                self.cipher.encrypt(data, *n);
+                (*n, data.as_ptr())
             });
-        utils::write_v_at(file, &mut self.ring, it)?;
 
-        Ok(())
-    }
+        let fd = file.as_raw_fd();
 
-    fn write(&mut self, file: &fs::File, n: u32, page: PBox) -> io::Result<()> {
-        if n < 256 {
-            self.log = Some((n, page));
-        } else {
-            self.inner.insert(n, page);
-            if self.inner.len() > 128 {
-                self.sync(file)?;
+        for (n, ptr) in it {
+            let op = opcode::Write::new(types::Fd(fd), ptr, 0x1000)
+                .offset(n_to_o(n))
+                .build()
+                .user_data(n as _);
+
+            if unsafe { self.ring.submission().push(&op).is_err() } {
+                let l = self.ring.submission().len();
+                self.ring.submit_and_wait(l)?;
+                self.ring.completion().sync();
+                while let Some(cqe) = self.ring.completion().next() {
+                    if cqe.result() < 0 {
+                        log::error!("Error: {}", io::Error::from_raw_os_error(-cqe.result()));
+                    }
+                }
+                unsafe { self.ring.submission().push(&op).unwrap() };
+            }
+        }
+
+        let l = self.ring.submission().len();
+        if l == 0 {
+            return Ok(());
+        }
+
+        self.ring.submit_and_wait(l)?;
+        while let Some(cqe) = self.ring.completion().next() {
+            if cqe.result() < 0 {
+                log::error!("Error: {}", io::Error::from_raw_os_error(-cqe.result()));
             }
         }
 
         Ok(())
     }
 
+    fn write(&mut self, _file: &fs::File, n: u32, page: PBox) -> io::Result<()> {
+        let item = CacheItem { page, dirty: true };
+        if n < 256 {
+            self.log = Some((n, item));
+        } else {
+            self.inner.insert(n.into(), item);
+        }
+
+        Ok(())
+    }
+
     fn read(&mut self, file: &fs::File, n: u32) -> io::Result<PBox> {
-        if let Some(page) = self.inner.get(&n) {
-            return Ok(page.clone());
+        if let Some(item) = self.inner.get(&n) {
+            return Ok(item.page.clone());
         }
 
         let mut page = PBox::new(4096, [0; PAGE_SIZE as usize]);
 
         utils::read_at(file, &mut *page, n_to_o(n))?;
         self.cipher.decrypt(&mut *page, n);
+        if n >= 256 {
+            let item = CacheItem {
+                page: page.clone(),
+                dirty: false,
+            };
+            self.inner.insert(n, item);
+        }
         Ok(page)
     }
 }
