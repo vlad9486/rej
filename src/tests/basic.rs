@@ -2,11 +2,13 @@ use std::iter;
 
 use rand::{seq::SliceRandom, Rng};
 
+use crate::NodePage;
+
 use super::with_db;
 
 #[test]
 fn scan() {
-    with_db(0x123, |db, rng| {
+    with_db::<_, _, NodePage>(0x123, |db, rng| {
         let mut rand_key = |i: u16| {
             let mut v = rng.gen::<[u8; 16]>();
             v[..2].clone_from_slice(&i.to_be_bytes());
@@ -41,7 +43,7 @@ fn scan() {
 
 #[test]
 fn keys() {
-    with_db(0x123, |db, rng| {
+    with_db::<_, _, NodePage>(0x123, |db, rng| {
         let mut keys = (1..100)
             .map(|i| {
                 [0, 1]
@@ -83,7 +85,7 @@ fn keys() {
 
 #[test]
 fn remove_merge_with_right() {
-    with_db(0x123, |db, _rng| {
+    with_db::<_, _, NodePage>(0x123, |db, _rng| {
         for i in 0..8 {
             db.entry(&[i]).vacant().unwrap().insert().unwrap();
         }
@@ -95,7 +97,7 @@ fn remove_merge_with_right() {
 
 #[test]
 fn remove_merge_with_left() {
-    with_db(0x123, |db, _rng| {
+    with_db::<_, _, NodePage>(0x123, |db, _rng| {
         for i in 0..8 {
             db.entry(&[i]).vacant().unwrap().insert().unwrap();
         }
@@ -107,7 +109,7 @@ fn remove_merge_with_left() {
 
 #[test]
 fn remove_borrow() {
-    with_db(0x123, |db, _rng| {
+    with_db::<_, _, NodePage>(0x123, |db, _rng| {
         for i in 0..9 {
             db.entry(&[i]).vacant().unwrap().insert().unwrap();
         }
@@ -122,7 +124,7 @@ fn remove_borrow() {
 
 #[test]
 fn remove_all() {
-    with_db(0x123, |db, rng| {
+    with_db::<_, _, NodePage>(0x123, |db, rng| {
         let mut keys = (0..17).map(|i| vec![i]).collect::<Vec<_>>();
         for key in &keys {
             db.entry(key)

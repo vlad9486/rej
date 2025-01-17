@@ -26,5 +26,6 @@ pub use self::cipher::Secret;
 pub use self::{
     cipher::{Params, CipherError},
     wal::{DbStats, WalError},
+    node::{NodePage, NodeCPage},
     db::{Db, DbError, DbIterator, Value, Entry, Occupied, Vacant},
 };

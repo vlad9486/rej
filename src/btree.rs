@@ -1,23 +1,27 @@
 use super::{
     page::{PagePtr, RawPtr},
-    runtime::{Alloc, Free, AbstractIo, Rt},
+    runtime::{PlainData, Free, AbstractIo},
+    file::FileIo,
     value::MetadataPage,
-    node::{NodePage, K},
+    node::{Node, R},
 };
 
-pub struct EntryInner {
-    stack: Vec<Level>,
-    leaf: Level,
+pub struct EntryInner<N> {
+    stack: Vec<Level<N>>,
+    leaf: Level<N>,
 }
 
-struct Level {
-    ptr: PagePtr<NodePage>,
-    node: NodePage,
+struct Level<N> {
+    ptr: PagePtr<N>,
+    node: N,
     idx: usize,
 }
 
-impl EntryInner {
-    pub fn new(view: &impl AbstractIo, root: PagePtr<NodePage>, key: &[u8]) -> (Self, bool) {
+impl<N> EntryInner<N>
+where
+    N: Copy + PlainData + Node,
+{
+    pub fn new(view: &FileIo, root: PagePtr<N>, key: &[u8]) -> (Self, bool) {
         let mut stack = Vec::with_capacity(6);
         let mut ptr = root;
 
@@ -32,7 +36,7 @@ impl EntryInner {
             } else {
                 let idx = node.search(view, key).unwrap_or_else(|idx| idx);
                 stack.push(Level { ptr, node, idx });
-                ptr = node.child[idx].unwrap_or_else(|| panic!("{idx}"));
+                ptr = node.child(idx).unwrap_or_else(|| panic!("{idx}"));
             }
         }
     }
@@ -60,7 +64,7 @@ impl EntryInner {
                 *it = None;
                 return;
             };
-            let mut ptr = last.node.child[last.idx].expect("must not fail");
+            let mut ptr = last.node.child(last.idx).expect("must not fail");
 
             loop {
                 let node = view.read(ptr);
@@ -71,30 +75,30 @@ impl EntryInner {
                 } else {
                     let idx = 0;
                     this.stack.push(Level { ptr, node, idx });
-                    ptr = node.child[idx].unwrap_or_else(|| panic!("{idx}"));
+                    ptr = node.child(idx).unwrap_or_else(|| panic!("{idx}"));
                 }
             }
         }
     }
 
     pub fn meta(&self) -> Option<PagePtr<MetadataPage>> {
-        self.leaf.node.child[self.leaf.idx].map(PagePtr::cast)
+        self.leaf.node.child(self.leaf.idx).map(PagePtr::cast)
     }
 
     pub fn set_meta(&mut self, meta: PagePtr<MetadataPage>) {
-        self.leaf.node.child[self.leaf.idx] = Some(meta.cast());
+        *self.leaf.node.child_mut(self.leaf.idx) = Some(meta.cast());
     }
 
-    pub fn key(&self, view: &impl AbstractIo) -> Vec<u8> {
-        self.leaf.node.get_key_old(view, self.leaf.idx)
+    pub fn key(&self, view: &FileIo) -> Vec<u8> {
+        self.leaf.node.read_key(view, self.leaf.idx)
     }
 
     pub fn insert(
         self,
-        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
+        mut rt: R<'_>,
         meta: Option<PagePtr<MetadataPage>>,
         key: &[u8],
-    ) -> PagePtr<NodePage> {
+    ) -> PagePtr<N> {
         let EntryInner {
             mut leaf,
             mut stack,
@@ -108,7 +112,7 @@ impl EntryInner {
 
         let mut ptr = leaf.ptr;
         while let Some(mut level) = stack.pop() {
-            level.node.child[level.idx] = Some(ptr);
+            *level.node.child_mut(level.idx) = Some(ptr);
             if let Some((key, neighbor)) = split {
                 level.node.realloc_keys(rt.reborrow());
                 split = level
@@ -121,7 +125,7 @@ impl EntryInner {
         }
 
         if let Some((key, neighbor)) = split {
-            let mut root = NodePage::empty();
+            let mut root = N::empty();
             root.append_child(ptr);
             root.insert(rt.reborrow(), Some(neighbor), 0, &key, true);
 
@@ -133,10 +137,7 @@ impl EntryInner {
         ptr
     }
 
-    pub fn remove(
-        self,
-        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-    ) -> PagePtr<NodePage> {
+    pub fn remove(self, mut rt: R) -> PagePtr<N> {
         let EntryInner {
             mut leaf,
             mut stack,
@@ -155,8 +156,10 @@ impl EntryInner {
                 level.node.realloc_keys(rt.reborrow());
 
                 let mut left = (level.idx > 0).then(|| {
-                    let ptr =
-                        level.node.child[level.idx - 1].expect("left neighbor always present");
+                    let ptr = level
+                        .node
+                        .child(level.idx - 1)
+                        .expect("left neighbor always present");
                     NodeWithPtr {
                         node: rt.io.read(ptr),
                         ptr,
@@ -164,7 +167,7 @@ impl EntryInner {
                 });
                 let mut right = (level.idx < level.node.len() - 1)
                     .then(|| {
-                        level.node.child[level.idx + 1].map(|ptr| NodeWithPtr {
+                        level.node.child(level.idx + 1).map(|ptr| NodeWithPtr {
                             node: rt.io.read(ptr),
                             ptr,
                         })
@@ -186,7 +189,7 @@ impl EntryInner {
                             *rt.mutate(ptr) = prev;
                             rt.set(&mut donor.ptr, donor.node);
 
-                            level.node.child[level.idx - 1] = Some(donor.ptr);
+                            *level.node.child_mut(level.idx - 1) = Some(donor.ptr);
 
                             let parent_key =
                                 donor.node.get_key(rt.reborrow(), donor.node.len() - 1);
@@ -207,11 +210,17 @@ impl EntryInner {
                             let (donated_ptr, donated_key) =
                                 donor.node.remove(rt.reborrow(), 0, false);
 
-                            prev.insert(rt.reborrow(), donated_ptr, K - 1, &donated_key, false);
+                            prev.insert(
+                                rt.reborrow(),
+                                donated_ptr,
+                                N::M / 2 - 1,
+                                &donated_key,
+                                false,
+                            );
                             *rt.mutate(ptr) = prev;
                             rt.set(&mut donor.ptr, donor.node);
 
-                            level.node.child[level.idx + 1] = Some(donor.ptr);
+                            *level.node.child_mut(level.idx + 1) = Some(donor.ptr);
 
                             level.node.set_key(rt.reborrow(), level.idx, &donated_key);
 
@@ -263,7 +272,7 @@ impl EntryInner {
                 level.node.free(rt.reborrow());
                 rt.free.free(level.ptr);
             } else {
-                level.node.child[level.idx] = Some(ptr);
+                *level.node.child_mut(level.idx) = Some(ptr);
                 rt.set(&mut level.ptr, level.node);
                 ptr = level.ptr;
                 prev = level.node;
@@ -274,24 +283,33 @@ impl EntryInner {
     }
 }
 
-struct NodeWithPtr {
-    node: NodePage,
-    ptr: PagePtr<NodePage>,
+struct NodeWithPtr<N> {
+    node: N,
+    ptr: PagePtr<N>,
 }
 
-impl NodeWithPtr {
+impl<N> NodeWithPtr<N>
+where
+    N: Node,
+{
     fn can_donate(&self) -> bool {
         self.node.can_donate()
     }
 }
 
-impl PartialEq for NodeWithPtr {
+impl<N> PartialEq for NodeWithPtr<N>
+where
+    N: Node,
+{
     fn eq(&self, other: &Self) -> bool {
         self.node.len().eq(&other.node.len())
     }
 }
 
-impl PartialOrd for NodeWithPtr {
+impl<N> PartialOrd for NodeWithPtr<N>
+where
+    N: Node,
+{
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.node.len().partial_cmp(&other.node.len())
     }
@@ -299,12 +317,9 @@ impl PartialOrd for NodeWithPtr {
 
 // for debug
 #[cfg(test)]
-pub fn print<K, D>(
-    rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-    ptr: PagePtr<NodePage>,
-    k: K,
-    old: bool,
-) where
+pub fn print<N, K, D>(rt: R<'_>, ptr: PagePtr<N>, k: K, old: bool)
+where
+    N: Copy + PlainData + Node,
     K: Fn(&[u8]) -> D,
     D: std::fmt::Display,
 {
@@ -314,14 +329,15 @@ pub fn print<K, D>(
     let mut nodes = BTreeMap::new();
     let mut edges = Vec::new();
 
-    fn print_inner<K, D>(
-        mut rt: Rt<'_, impl Alloc, impl Free, impl AbstractIo>,
-        ptr: PagePtr<NodePage>,
+    fn print_inner<N, K, D>(
+        mut rt: R<'_>,
+        ptr: PagePtr<N>,
         nodes: &mut BTreeMap<u32, String>,
         edges: &mut Vec<(u32, u32)>,
         k: &K,
         old: bool,
     ) where
+        N: Copy + PlainData + Node,
         K: Fn(&[u8]) -> D,
         D: std::fmt::Display,
     {
@@ -329,7 +345,7 @@ pub fn print<K, D>(
         let node_text = (0..(page.len() - usize::from(!page.is_leaf())))
             .map(|idx| {
                 if old {
-                    page.get_key_old(rt.io, idx)
+                    page.read_key(rt.io, idx)
                 } else {
                     page.get_key(rt.reborrow(), idx)
                 }
@@ -339,7 +355,7 @@ pub fn print<K, D>(
             .join("|");
         nodes.insert(ptr.raw_number(), format!("\"{node_text}\""));
 
-        for n in (0..page.len()).map(|idx| page.child[idx]) {
+        for n in (0..page.len()).map(|idx| page.child(idx)) {
             let child_ptr = n.map(PagePtr::raw_number).unwrap_or_default();
             edges.push((ptr.raw_number(), child_ptr));
             if !page.is_leaf() {

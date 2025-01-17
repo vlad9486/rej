@@ -1,8 +1,10 @@
+use crate::NodePage;
+
 use super::with_db;
 
 #[test]
 fn big() {
-    with_db(0x123, |db, rng| {
+    with_db::<_, _, NodePage>(0x123, |db, rng| {
         use rand::seq::SliceRandom;
 
         const NUM: u16 = 1000;

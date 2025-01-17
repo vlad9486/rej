@@ -10,9 +10,9 @@ use rand::{rngs::StdRng, SeedableRng};
 
 use crate::{Db, Params};
 
-pub fn with_db<F, T>(seed: u64, f: F) -> T
+pub fn with_db<F, T, N>(seed: u64, f: F) -> T
 where
-    F: FnOnce(Db, &mut StdRng) -> T,
+    F: FnOnce(Db<N>, &mut StdRng) -> T,
 {
     let env = env_logger::Env::new().filter_or(
         "RUST_LOG",
@@ -25,7 +25,7 @@ where
     let dir = TempDir::new_in("target/tmp", "rej").unwrap();
     let path = dir.path().join("test-insert");
 
-    let db = Db::new(&path, Params::new_mock(true)).unwrap();
+    let db = Db::<N>::new(&path, Params::new_mock(true)).unwrap();
     drop(db);
 
     let db = Db::new(&path, Params::new_mock(false)).unwrap();

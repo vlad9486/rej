@@ -2,9 +2,9 @@ use std::{fs, panic, path::Path};
 
 use tempdir::TempDir;
 
-use crate::{Db, DbError, DbStats, Params};
+use crate::{Db, DbError, DbStats, Params, NodePage};
 
-fn populate(db: Db) -> Result<DbStats, DbError> {
+fn populate(db: Db<NodePage>) -> Result<DbStats, DbError> {
     let data = |s| {
         128u64
             .to_le_bytes()
@@ -32,7 +32,7 @@ fn populate(db: Db) -> Result<DbStats, DbError> {
 }
 
 // TODO: proper check
-fn check(db: Db) -> bool {
+fn check(db: Db<NodePage>) -> bool {
     let stats = db.stats();
     db.print(|k| std::str::from_utf8(k).unwrap().to_owned());
     let mut it = db.entry(b"").into_db_iter();
@@ -56,7 +56,7 @@ fn recovery_test<const MESS_PAGE: bool>() {
     let dir = TempDir::new_in("target/tmp", "rej").unwrap();
     let path = dir.path().join("test-recovery");
 
-    let db = Db::new(&path, Params::new_mock(true)).unwrap();
+    let db = Db::<NodePage>::new(&path, Params::new_mock(true)).unwrap();
     drop(db);
 
     let db = Db::new(&path, Params::new_mock(false)).unwrap();
@@ -69,7 +69,7 @@ fn recovery_test<const MESS_PAGE: bool>() {
 
 fn crash_test(path: &Path, crash_at: u32, mess_page: bool) {
     fs::remove_file(path).unwrap_or_default();
-    let db = Db::new(path, Params::new_mock(true)).unwrap();
+    let db = Db::<NodePage>::new(path, Params::new_mock(true)).unwrap();
     drop(db);
 
     let err = panic::catch_unwind(move || {

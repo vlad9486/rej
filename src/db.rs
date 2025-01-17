@@ -1,4 +1,4 @@
-use std::{io, mem, path::Path};
+use std::{io, marker::PhantomData, mem, path::Path};
 
 use thiserror::Error;
 
@@ -6,20 +6,25 @@ use super::{
     page::{PagePtr, RawPtr},
     runtime::{AbstractIo, Rt, Alloc, Free},
     cipher::{CipherError, Params},
+    runtime::PlainData,
     file::FileIo,
-    btree,
     wal::{Wal, WalLock, WalError, DbStats},
     value::MetadataPage,
+    node::Node,
+    btree,
 };
 
-pub enum Entry<'a, K> {
-    Occupied(Occupied<'a>),
-    Empty(EmptyCell<'a>),
-    Vacant(Vacant<'a, K>),
+pub enum Entry<'a, N, K> {
+    Occupied(Occupied<'a, N>),
+    Empty(EmptyCell<'a, N>),
+    Vacant(Vacant<'a, N, K>),
 }
 
-impl<'a, K> Entry<'a, K> {
-    pub fn into_db_iter(self) -> DbIterator {
+impl<'a, N, K> Entry<'a, N, K>
+where
+    N: Copy + PlainData + Node,
+{
+    pub fn into_db_iter(self) -> DbIterator<N> {
         match self {
             Self::Occupied(v) => {
                 let inner = Some(v.inner);
@@ -36,7 +41,7 @@ impl<'a, K> Entry<'a, K> {
         }
     }
 
-    pub fn occupied(self) -> Option<Occupied<'a>> {
+    pub fn occupied(self) -> Option<Occupied<'a, N>> {
         if let Self::Occupied(v) = self {
             Some(v)
         } else {
@@ -44,7 +49,7 @@ impl<'a, K> Entry<'a, K> {
         }
     }
 
-    pub fn empty(self) -> Option<EmptyCell<'a>> {
+    pub fn empty(self) -> Option<EmptyCell<'a, N>> {
         if let Self::Empty(v) = self {
             Some(v)
         } else {
@@ -52,7 +57,7 @@ impl<'a, K> Entry<'a, K> {
         }
     }
 
-    pub fn vacant(self) -> Option<Vacant<'a, K>> {
+    pub fn vacant(self) -> Option<Vacant<'a, N, K>> {
         if let Self::Vacant(v) = self {
             Some(v)
         } else {
@@ -61,20 +66,20 @@ impl<'a, K> Entry<'a, K> {
     }
 }
 
-pub struct Occupied<'a> {
-    inner: btree::EntryInner,
+pub struct Occupied<'a, N> {
+    inner: btree::EntryInner<N>,
     lock: WalLock<'a>,
     file: &'a FileIo,
 }
 
-pub struct EmptyCell<'a> {
-    inner: btree::EntryInner,
+pub struct EmptyCell<'a, N> {
+    inner: btree::EntryInner<N>,
     lock: WalLock<'a>,
     file: &'a FileIo,
 }
 
-pub struct Vacant<'a, K> {
-    inner: btree::EntryInner,
+pub struct Vacant<'a, N, K> {
+    inner: btree::EntryInner<N>,
     lock: WalLock<'a>,
     file: &'a FileIo,
     bytes: K,
@@ -86,12 +91,13 @@ pub struct Value<'a> {
     file: &'a FileIo,
 }
 
-pub struct DbIterator {
-    inner: Option<btree::EntryInner>,
+pub struct DbIterator<N> {
+    inner: Option<btree::EntryInner<N>>,
 }
 
-impl<'a, K> Vacant<'a, K>
+impl<'a, N, K> Vacant<'a, N, K>
 where
+    N: Copy + PlainData + Node,
     K: AsRef<[u8]>,
 {
     pub fn insert_empty(self) -> Result<(), DbError> {
@@ -129,8 +135,11 @@ where
     }
 }
 
-impl<'a> EmptyCell<'a> {
-    pub fn occupy(mut self) -> Occupied<'a> {
+impl<'a, N> EmptyCell<'a, N>
+where
+    N: Copy + PlainData + Node,
+{
+    pub fn occupy(mut self) -> Occupied<'a, N> {
         let (alloc, _) = self.lock.cache_mut();
         self.inner.set_meta(alloc.alloc());
         let EmptyCell { inner, lock, file } = self;
@@ -157,7 +166,10 @@ impl<'a> EmptyCell<'a> {
     }
 }
 
-impl<'a> Occupied<'a> {
+impl<'a, N> Occupied<'a, N>
+where
+    N: Copy + PlainData + Node,
+{
     pub fn into_value(self) -> Value<'a> {
         self.as_value()
     }
@@ -228,18 +240,23 @@ pub enum DbError {
     Cipher(#[from] CipherError),
 }
 
-pub struct Db {
+pub struct Db<N> {
     file: FileIo,
     wal: Wal,
+    phantom_data: PhantomData<N>,
 }
 
-impl Db {
+impl<N> Db<N> {
     pub fn new(path: impl AsRef<Path>, params: Params) -> Result<Self, DbError> {
         let create = params.create();
         let file = FileIo::new(path, params)?;
         let wal = Wal::new(create, &file)?;
 
-        Ok(Db { file, wal })
+        Ok(Db {
+            file,
+            wal,
+            phantom_data: PhantomData,
+        })
     }
 
     /// Makes sense only for encrypted database
@@ -271,6 +288,15 @@ impl Db {
         self
     }
 
+    pub fn stats(&self) -> DbStats {
+        self.wal.lock().stats(&self.file)
+    }
+}
+
+impl<N> Db<N>
+where
+    N: Copy + PlainData + Node,
+{
     #[cfg(test)]
     pub fn print<K, D>(&self, k: K)
     where
@@ -284,10 +310,10 @@ impl Db {
         let mut storage = Default::default();
         let rt = Rt::new(alloc, free, io, &mut storage);
 
-        btree::print(rt, old_head, k, true);
+        btree::print::<N, K, D>(rt, old_head, k, true);
     }
 
-    pub fn entry<K>(&self, bytes: K) -> Entry<'_, K>
+    pub fn entry<K>(&self, bytes: K) -> Entry<'_, N, K>
     where
         K: AsRef<[u8]>,
     {
@@ -311,7 +337,7 @@ impl Db {
         }
     }
 
-    pub fn next<'a>(&'a self, it: &mut DbIterator) -> Option<(Vec<u8>, Option<Value<'a>>)> {
+    pub fn next<'a>(&'a self, it: &mut DbIterator<N>) -> Option<(Vec<u8>, Option<Value<'a>>)> {
         let file = &self.file;
         let inner = it.inner.as_mut()?;
         let key = inner.key(file);
@@ -320,9 +346,5 @@ impl Db {
         btree::EntryInner::next(&mut it.inner, file);
 
         Some((key, value))
-    }
-
-    pub fn stats(&self) -> DbStats {
-        self.wal.lock().stats(&self.file)
     }
 }
