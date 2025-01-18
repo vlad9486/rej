@@ -4,9 +4,9 @@ use thiserror::Error;
 
 use super::{
     page::{PagePtr, RawPtr},
-    runtime::{AbstractIo, Rt, Alloc, Free},
+    runtime::{AbstractIo, Rt, Alloc},
     cipher::{CipherError, Params},
-    runtime::PlainData,
+    runtime::{PlainData, PageKind},
     file::FileIo,
     wal::{Wal, WalLock, WalError, DbStats},
     value::MetadataPage,
@@ -129,7 +129,7 @@ where
 
         let new_head = inner.insert(rt.reborrow(), ptr, bytes.as_ref());
         rt.flush()?;
-        wal_lock.new_head(self.file, new_head)?;
+        wal_lock.new_head(self.file, new_head, None)?;
 
         Ok(ptr.map(|ptr| Value { ptr, file }))
     }
@@ -160,7 +160,7 @@ where
         let new_head = inner.remove(rt.reborrow());
         rt.flush()?;
 
-        wal_lock.new_head(file, new_head)?;
+        wal_lock.new_head(file, new_head, None)?;
 
         Ok(())
     }
@@ -197,10 +197,7 @@ where
         let new_head = inner.remove(rt.reborrow());
         rt.flush()?;
 
-        if let Some(old) = old {
-            free.free(old.cast::<MetadataPage>());
-        }
-        wal_lock.new_head(file, new_head)?;
+        wal_lock.new_head(file, new_head, old)?;
 
         Ok(Value { ptr, file })
     }
@@ -224,7 +221,8 @@ impl Value<'_> {
     pub fn write_at(&self, offset: usize, buf: &[u8]) -> Result<(), DbError> {
         let mut page = self.file.read_page(self.ptr.raw_number())?;
         page[offset..][..buf.len()].clone_from_slice(buf);
-        self.file.write_page(self.ptr.raw_number(), page)?;
+        self.file
+            .write_page(self.ptr.raw_number(), PageKind::Data, page)?;
 
         Ok(())
     }

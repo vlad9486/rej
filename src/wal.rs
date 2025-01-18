@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use super::{
     page::{PagePtr, RawPtr},
-    runtime::{Alloc, Free, PlainData, AbstractIo},
+    runtime::{Alloc, Free, PlainData, AbstractIo, PageKind},
     file::FileIo,
 };
 
@@ -53,7 +53,7 @@ impl Wal {
                 let page = RecordPage::new(inner);
                 let ptr = file.grow(pos, 1)?;
 
-                file.write(ptr, page)?;
+                file.write(ptr, PageKind::Log, page)?;
             }
             let head = file.grow(Self::SIZE, 1)?.expect("must yield some");
 
@@ -67,7 +67,7 @@ impl Wal {
                 head,
                 orphan: None,
             }));
-            s.lock().fill_cache(file)?;
+            s.lock().fill_cache(file, None)?;
             file.sync()?;
 
             log::info!("did initialize empty database");
@@ -87,8 +87,8 @@ impl Wal {
             let stats = lock.stats(file);
             log::info!("did open database, will unroll log, stats: {stats:?}");
             lock.unroll(file)?;
-            lock.clear_orphan(file)?;
-            lock.fill_cache(file)?;
+            let orphan = lock.orphan_mut().take();
+            lock.fill_cache(file, orphan)?;
             drop(lock);
             log::info!("did unroll log");
 
@@ -137,7 +137,7 @@ impl WalLock<'_> {
     fn write(&mut self, file: &FileIo) -> Result<(), WalError> {
         self.next();
         let page = RecordPage::new(*self.0);
-        file.write(self.ptr(), page)?;
+        file.write(self.ptr(), PageKind::Log, page)?;
 
         Ok(())
     }
@@ -160,11 +160,27 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    fn fill_cache(&mut self, file: &FileIo) -> Result<(), WalError> {
+    fn fill_cache(&mut self, file: &FileIo, orphan: Option<PagePtr<()>>) -> Result<(), WalError> {
+        struct FreelistCacheIter<'a>(&'a mut FreelistCache);
+
+        impl<'a> Iterator for FreelistCacheIter<'a> {
+            type Item = PagePtr<FreePage>;
+
+            fn next(&mut self) -> Option<PagePtr<FreePage>> {
+                self.0.take()
+            }
+        }
+
+        let mut freelist = self.0.freelist;
+        let (cache, garbage) = self.cache_mut();
+        let garbage = FreelistCacheIter(garbage);
+        let orphan = orphan.map(|ptr| (PageKind::Data, ptr.cast()));
+        let mut iter = garbage.map(|ptr| (PageKind::Tree, ptr)).chain(orphan);
+
         loop {
-            if !self.0.cache.is_full() {
-                if let Some(ptr) = self.0.garbage.take() {
-                    self.0.cache.put(ptr);
+            if !cache.is_full() {
+                if let Some((_, ptr)) = iter.next() {
+                    cache.put(ptr);
                     continue;
                 }
             }
@@ -172,10 +188,9 @@ impl WalLock<'_> {
             break;
         }
 
-        let mut freelist = self.0.freelist;
-        while let Some(ptr) = self.0.garbage.take() {
+        while let Some((kind, ptr)) = iter.next() {
             let page = FreePage { next: freelist };
-            file.write(ptr, page)?;
+            file.write(ptr, kind, page)?;
             freelist = Some(ptr);
         }
 
@@ -208,22 +223,15 @@ impl WalLock<'_> {
         Ok(())
     }
 
-    fn clear_orphan(&mut self, file: &FileIo) -> Result<(), WalError> {
-        let mut freelist = self.0.freelist;
-        if let Some(ptr) = self.0.orphan.take().map(PagePtr::cast) {
-            let page = FreePage { next: freelist };
-            file.write(ptr, page)?;
-            freelist = Some(ptr);
-        }
-        self.0.freelist = freelist;
-
-        Ok(())
-    }
-
-    pub fn new_head<T>(&mut self, file: &FileIo, head: PagePtr<T>) -> Result<(), WalError> {
+    pub fn new_head<T>(
+        &mut self,
+        file: &FileIo,
+        head: PagePtr<T>,
+        orphan: Option<PagePtr<()>>,
+    ) -> Result<(), WalError> {
         self.0.head = head.cast();
         self.write(file)?;
-        self.fill_cache(file)?;
+        self.fill_cache(file, orphan)?;
 
         Ok(())
     }

@@ -14,7 +14,7 @@ use io_uring::IoUring;
 use super::{
     utils,
     page::{PagePtr, RawPtr, PAGE_SIZE},
-    runtime::{AbstractIo, PBox},
+    runtime::{AbstractIo, PBox, PageKind},
 };
 use super::cipher::{self, Cipher, CipherError, Params, CRYPTO_SIZE};
 
@@ -115,7 +115,7 @@ impl FileIo {
         let mut cache = self.cache.lock().expect("poisoned");
         for i in old..(old + n) {
             let page = PBox::new(4096, [0; PAGE_SIZE as usize]);
-            cache.write(&self.file, i, page)?;
+            cache.write(&self.file, PageKind::Clear, i, page)?;
         }
 
         Ok(PagePtr::from_raw_number(old))
@@ -140,22 +140,13 @@ impl AbstractIo for FileIo {
         self.cache.lock().expect("poisoned").read(&self.file, n)
     }
 
-    fn write_page(&self, n: u32, page: PBox) -> io::Result<()> {
+    fn write_page(&self, n: u32, kind: PageKind, page: PBox) -> io::Result<()> {
         self.write_stats(u64::from(n) * PAGE_SIZE);
 
         self.cache
             .lock()
             .expect("poisoned")
-            .write(&self.file, n, page)
-    }
-
-    fn write_batch(&self, it: impl IntoIterator<Item = (u32, PBox)>) -> io::Result<()> {
-        // no special treatment for batch
-        for (n, page) in it {
-            self.write_page(n, page)?;
-        }
-
-        Ok(())
+            .write(&self.file, kind, n, page)
     }
 }
 
@@ -168,20 +159,23 @@ struct Cache {
     ring: IoUring,
     log: Option<(u32, CacheItem)>,
     inner: BTreeMap<u32, CacheItem>,
+    calls: BTreeMap<PageKind, usize>,
 }
 
 struct CacheItem {
     page: PBox,
     dirty: bool,
+    kind: PageKind,
 }
 
 impl Cache {
     fn new(cipher: Cipher) -> io::Result<Self> {
         Ok(Cache {
             cipher,
-            ring: IoUring::new(1024)?,
+            ring: IoUring::new(64)?,
             log: None,
             inner: BTreeMap::default(),
+            calls: BTreeMap::default(),
         })
     }
 }
@@ -193,11 +187,13 @@ impl Cache {
 
         let mut map = mem::take(&mut self.inner);
         let mut log = self.log.take();
+        let mut written = BTreeMap::<_, usize>::default();
         let it = map
             .iter_mut()
-            .chain(log.as_mut().map(|(n, p)| (&*n, p)))
+            .chain(log.as_mut().map(|(n, item)| (&*n, item)))
             .filter(|(_, item)| item.dirty)
             .map(|(n, item)| {
+                *written.entry(item.kind).or_default() += 1;
                 let data = &mut *item.page;
                 self.cipher.encrypt(data, *n);
                 (*n, data.as_ptr())
@@ -211,7 +207,7 @@ impl Cache {
                 .build()
                 .user_data(n as _);
 
-            if unsafe { self.ring.submission().push(&op).is_err() } {
+            while unsafe { self.ring.submission().push(&op).is_err() } {
                 let l = self.ring.submission().len();
                 self.ring.submit_and_wait(l)?;
                 self.ring.completion().sync();
@@ -220,9 +216,10 @@ impl Cache {
                         log::error!("Error: {}", io::Error::from_raw_os_error(-cqe.result()));
                     }
                 }
-                unsafe { self.ring.submission().push(&op).unwrap() };
             }
         }
+        let calls = mem::take(&mut self.calls);
+        log::debug!("calls: {calls:?}, will write: {written:?}");
 
         let l = self.ring.submission().len();
         if l == 0 {
@@ -239,8 +236,13 @@ impl Cache {
         Ok(())
     }
 
-    fn write(&mut self, _file: &fs::File, n: u32, page: PBox) -> io::Result<()> {
-        let item = CacheItem { page, dirty: true };
+    fn write(&mut self, _file: &fs::File, kind: PageKind, n: u32, page: PBox) -> io::Result<()> {
+        let item = CacheItem {
+            page,
+            dirty: true,
+            kind,
+        };
+        *self.calls.entry(kind).or_default() += 1;
         if n < 256 {
             self.log = Some((n, item));
         } else {
@@ -263,6 +265,7 @@ impl Cache {
             let item = CacheItem {
                 page: page.clone(),
                 dirty: false,
+                kind: PageKind::Clear,
             };
             self.inner.insert(n, item);
         }

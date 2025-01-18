@@ -56,7 +56,12 @@ pub trait AbstractIo {
         *T::as_this(&*page)
     }
 
-    fn write<T>(&self, ptr: impl Into<Option<PagePtr<T>>>, value: T) -> io::Result<()>
+    fn write<T>(
+        &self,
+        ptr: impl Into<Option<PagePtr<T>>>,
+        kind: PageKind,
+        value: T,
+    ) -> io::Result<()>
     where
         T: PlainData,
     {
@@ -64,12 +69,18 @@ pub trait AbstractIo {
         let bytes = value.as_bytes();
         page[..bytes.len()].clone_from_slice(bytes);
 
-        self.write_page(ptr.into().map_or(0, PagePtr::raw_number), page)
+        self.write_page(ptr.into().map_or(0, PagePtr::raw_number), kind, page)
     }
 
-    fn write_page(&self, n: u32, page: PBox) -> io::Result<()>;
+    fn write_page(&self, n: u32, kind: PageKind, page: PBox) -> io::Result<()>;
+}
 
-    fn write_batch(&self, it: impl Iterator<Item = (u32, PBox)>) -> io::Result<()>;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum PageKind {
+    Log,
+    Tree,
+    Data,
+    Clear,
 }
 
 pub type PBox = ABox<[u8; PAGE_SIZE as usize], ConstAlign<{ PAGE_SIZE as usize }>>;
@@ -172,6 +183,10 @@ where
     }
 
     pub fn flush(self) -> io::Result<()> {
-        self.io.write_batch(mem::take(self.storage).into_iter())
+        for (n, page) in mem::take(self.storage) {
+            self.io.write_page(n, PageKind::Tree, page)?;
+        }
+
+        Ok(())
     }
 }
